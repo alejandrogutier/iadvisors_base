@@ -50,22 +50,24 @@ export const AuthProvider = ({ children }) => {
         }
       } catch (error) {
         const status = error?.response?.status;
-        if (status === 404 && user?.email) {
-          try {
-            const { data } = await api.get('/users/resolve', {
-              params: { email: user.email }
-            });
-            if (!ignore) {
-              setUser(data.user);
+        if (status === 404) {
+          if (user?.email) {
+            try {
+              const { data } = await api.get('/users/resolve', {
+                params: { email: user.email }
+              });
+              if (!ignore) {
+                setUser(data.user);
+              }
+              return;
+            } catch (resolveError) {
+              console.error('No se pudo resolver la sesion por email', resolveError);
             }
-            return;
-          } catch (resolveError) {
-            console.error('No se pudo resolver la sesion por email', resolveError);
-            if (!ignore) {
-              setUser(null);
-            }
-            return;
           }
+          if (!ignore) {
+            setUser(null);
+          }
+          return;
         }
         console.error('No se pudo sincronizar el usuario', error);
       } finally {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, Form, Input, InputNumber, Select, Space, Typography, message as antdMessage } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import api from '../api';
@@ -10,7 +10,11 @@ const AdminBrandsPanel = () => {
   const [selectedBrandId, setSelectedBrandId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [kbLoading, setKbLoading] = useState(false);
+  const [kbProvisioning, setKbProvisioning] = useState(false);
+  const [knowledgeBases, setKnowledgeBases] = useState([]);
   const [form] = Form.useForm();
+  const selectedKnowledgeBaseId = Form.useWatch('knowledgeBaseId', form);
 
   const loadBrands = async () => {
     setLoading(true);
@@ -31,6 +35,29 @@ const AdminBrandsPanel = () => {
   useEffect(() => {
     loadBrands();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadKnowledgeBases = useCallback(async (brandId) => {
+    if (!brandId) {
+      setKnowledgeBases([]);
+      setKbLoading(false);
+      return;
+    }
+
+    setKbLoading(true);
+    try {
+      const { data } = await api.get('/admin/knowledge-bases', {
+        headers: {
+          'x-brand-id': brandId
+        }
+      });
+      setKnowledgeBases(Array.isArray(data.knowledgeBases) ? data.knowledgeBases : []);
+    } catch (error) {
+      antdMessage.error(error.response?.data?.error || 'No se pudieron cargar las Knowledge Bases');
+      setKnowledgeBases([]);
+    } finally {
+      setKbLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -57,6 +84,10 @@ const AdminBrandsPanel = () => {
       prompts: brand.measurement?.prompts || []
     });
   }, [selectedBrandId, brands, form]);
+
+  useEffect(() => {
+    loadKnowledgeBases(selectedBrandId);
+  }, [selectedBrandId, loadKnowledgeBases]);
 
   const handleSave = async () => {
     try {
@@ -99,10 +130,75 @@ const AdminBrandsPanel = () => {
     }
   };
 
+  const handleProvisionKnowledgeBase = async () => {
+    if (!selectedBrandId) {
+      antdMessage.warning('Primero selecciona una marca existente');
+      return;
+    }
+
+    const modelId = form.getFieldValue('modelId');
+    if (!modelId || !String(modelId).trim()) {
+      antdMessage.warning('Define un Model ID antes de crear la KB');
+      return;
+    }
+
+    setKbProvisioning(true);
+    try {
+      const { data } = await api.post(
+        '/admin/knowledge-base/provision',
+        {
+          modelId: String(modelId).trim()
+        },
+        {
+          headers: {
+            'x-brand-id': selectedBrandId
+          }
+        }
+      );
+
+      const updatedBrand = data.brand || {};
+      form.setFieldsValue({
+        modelId: updatedBrand.modelId || modelId,
+        knowledgeBaseId: updatedBrand.knowledgeBaseId || '',
+        knowledgeBaseStatus: updatedBrand.knowledgeBaseStatus || '',
+        kbDataSourceId: updatedBrand.kbDataSourceId || '',
+        kbS3Prefix: updatedBrand.kbS3Prefix || ''
+      });
+
+      await Promise.all([loadBrands(), loadKnowledgeBases(selectedBrandId)]);
+      antdMessage.success('Knowledge Base creada o vinculada');
+    } catch (error) {
+      antdMessage.error(error.response?.data?.error || 'No se pudo crear la Knowledge Base');
+    } finally {
+      setKbProvisioning(false);
+    }
+  };
+
   const brandOptions = useMemo(
     () => brands.map((brand) => ({ label: brand.name, value: brand.id })),
     [brands]
   );
+
+  const knowledgeBaseOptions = useMemo(() => {
+    const options = knowledgeBases
+      .filter((kb) => kb?.id)
+      .map((kb) => ({
+        value: kb.id,
+        label: `${kb.name || kb.id}${kb.status ? ` · ${kb.status}` : ''}`
+      }));
+
+    if (
+      selectedKnowledgeBaseId &&
+      !options.some((option) => option.value === selectedKnowledgeBaseId)
+    ) {
+      options.push({
+        value: selectedKnowledgeBaseId,
+        label: `${selectedKnowledgeBaseId} · actual`
+      });
+    }
+
+    return options.sort((a, b) => a.value.localeCompare(b.value));
+  }, [knowledgeBases, selectedKnowledgeBaseId]);
 
   const startNewBrand = () => {
     setSelectedBrandId(null);
@@ -148,6 +244,31 @@ const AdminBrandsPanel = () => {
           </Form.Item>
           <Form.Item label="Model ID" name="modelId" rules={[{ required: true, message: 'Model ID requerido' }]}> 
             <Input placeholder="anthropic.claude-3-5-haiku-20241022-v1:0" />
+          </Form.Item>
+          <Form.Item label="Seleccionar KB existente">
+            <Space.Compact block>
+              <Select
+                allowClear
+                showSearch
+                placeholder="Selecciona una Knowledge Base"
+                options={knowledgeBaseOptions}
+                optionFilterProp="label"
+                loading={kbLoading}
+                value={selectedKnowledgeBaseId || undefined}
+                onChange={(value) => {
+                  form.setFieldValue('knowledgeBaseId', value || '');
+                }}
+                style={{ width: '100%' }}
+              />
+              <Button
+                type="default"
+                onClick={handleProvisionKnowledgeBase}
+                loading={kbProvisioning}
+                disabled={saving}
+              >
+                Crear KB
+              </Button>
+            </Space.Compact>
           </Form.Item>
           <Form.Item label="Knowledge Base ID" name="knowledgeBaseId">
             <Input placeholder="kb-xxxxxxxx" />
