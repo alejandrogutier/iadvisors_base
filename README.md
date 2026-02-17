@@ -82,15 +82,15 @@ Consulta la sección “Checklist de alistamiento para producción” en `ARCHIT
 | `AI_PROVIDER` | Proveedor de IA en runtime. | Sí | `bedrock` |
 | `RAG_ENABLED` | Activa recuperación desde Knowledge Base. | No | `true` |
 | `BEDROCK_REGION` | Región de Bedrock Runtime/Agent. | Sí | `us-east-1` |
-| `BEDROCK_MODEL_ID_DEFAULT` | Model ID por defecto para chat. | Sí | `anthropic.claude-3-5-haiku-20241022-v1:0` |
-| `BEDROCK_MEASUREMENT_MODEL` | Model ID por defecto para mediciones. | No | `anthropic.claude-3-5-haiku-20241022-v1:0` |
+| `BEDROCK_MODEL_ID_DEFAULT` | Model ID por defecto para chat (fallback seguro recomendado). | Sí | `us.amazon.nova-lite-v1:0` |
+| `BEDROCK_MEASUREMENT_MODEL` | Model ID por defecto para mediciones. | No | `us.amazon.nova-lite-v1:0` |
 | `BEDROCK_EMBEDDING_MODEL_ARN` | ARN del modelo de embeddings para KB. | No | `arn:aws:bedrock:...:foundation-model/amazon.titan-embed-text-v2:0` |
 | `BEDROCK_KB_ROLE_ARN` | Role ARN usado para crear/operar Knowledge Bases. | Sí (cloud) | `arn:aws:iam::...:role/...` |
 | `BEDROCK_KB_COLLECTION_ARN` | Colección OpenSearch Serverless vectorial para KB. | Sí (cloud) | `arn:aws:aoss:...:collection/...` |
 | `BEDROCK_KB_VECTOR_INDEX_NAME` | Índice vectorial de la colección OSS. | No | `iadvisors-index` |
 | `KB_BUCKET` | Bucket S3 de documentos para Knowledge Base. | Sí (cloud) | `iadvisors-bayer-preprod-kb...` |
 | `DEFAULT_BRAND_ID` / `DEFAULT_BRAND_NAME` / `DEFAULT_BRAND_SLUG` | Configuración inicial de la primera marca creada automáticamente. | Sí | `gynocanesten`, `Gynocanestén`, `gynocanesten` |
-| `DEFAULT_BRAND_MODEL_ID` / `DEFAULT_BRAND_KB_ID` | Identificadores por defecto de modelo y knowledge base de marca. | Sí/No | `anthropic...`, `kb-...` |
+| `DEFAULT_BRAND_MODEL_ID` / `DEFAULT_BRAND_KB_ID` / `DEFAULT_BRAND_KB_DATA_SOURCE_ID` / `DEFAULT_BRAND_KB_S3_PREFIX` | Defaults de marca para modelo + KB (ID, data source y prefijo S3). Úsalo para rehidratar configuración tras redeploys. | Sí/No | `us.amazon.nova-lite-v1:0`, `kb-...`, `ds-...`, `kb/gynocanesten/` |
 | `DEFAULT_BRAND_MEASUREMENT_MODEL` / `DEFAULT_BRAND_MEASUREMENT_SAMPLE_SIZE` / `DEFAULT_BRAND_MEASUREMENT_CRON` | Configuran las mediciones por marca (modelo, muestras diarias y cron). | No | Modelo Bedrock, muestras `100`, cron `0 6 * * *` |
 | `MEASUREMENT_SAMPLE_SIZE` / `MEASUREMENT_CRON` | Valores globales usados como fallback para todas las marcas. | No | `100`, `0 6 * * *` |
 | `PORT` | Puerto HTTP del backend. | No | `5001` |
