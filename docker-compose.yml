@@ -1,0 +1,26 @@
+services:
+  server:
+    build:
+      context: ./server
+    env_file:
+      - ./server/.env
+    environment:
+      DATABASE_PATH: /app/data/iadvisors.db
+      PORT: ${PORT:-5001}
+    volumes:
+      - server_data:/app/data
+    ports:
+      - '5001:5001'
+    restart: unless-stopped
+
+  client:
+    build:
+      context: ./client
+    depends_on:
+      - server
+    ports:
+      - '4173:4173'
+    restart: unless-stopped
+
+volumes:
+  server_data:

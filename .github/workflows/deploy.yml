@@ -1,0 +1,117 @@
+name: Despliegue a AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  PROJECT_NAME: ${{ vars.PROJECT_NAME || 'iadvisors-bayer' }}
+  ENVIRONMENT: ${{ vars.ENVIRONMENT || 'preprod' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'iadvisors-bayer-preprod-api' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'iadvisors-bayer-preprod-cluster' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'iadvisors-bayer-preprod-api' }}
+  FRONTEND_BUCKET: ${{ vars.FRONTEND_BUCKET || 'iadvisors-bayer-preprod-frontend' }}
+  ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  backend:
+    name: Backend (ECR + ECS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Instalar dependencias backend
+        working-directory: server
+        run: npm ci
+
+      - name: Validar backend
+        working-directory: server
+        run: npm test
+
+      - name: Preparar Dockerfile
+        run: |
+          echo "Iniciando build de imagen"
+
+      - name: Autenticarse en ECR
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws configure set default.region ${AWS_REGION}
+          aws ecr get-login-password | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+        shell: bash
+
+      - name: Construir y publicar imagen
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          IMAGE_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${GITHUB_SHA}
+          docker build -f server/Dockerfile -t ${IMAGE_URI} .
+          docker push ${IMAGE_URI}
+          echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Actualizar servicio ECS
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws ecs update-service --cluster ${ECS_CLUSTER} --service ${ECS_SERVICE} --force-new-deployment
+          aws ecs wait services-stable --cluster ${ECS_CLUSTER} --services ${ECS_SERVICE}
+        shell: bash
+
+  frontend:
+    name: Frontend (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+
+      - name: Instalar dependencias frontend
+        working-directory: client
+        run: npm ci
+
+      - name: Construir frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Sincronizar artefactos con S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws s3 sync client/dist s3://${FRONTEND_BUCKET} --delete
+        shell: bash
+
+      - name: Invalidar CloudFront
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${CLOUDFRONT_DISTRIBUTION_ID} --paths "/*"
+        shell: bash

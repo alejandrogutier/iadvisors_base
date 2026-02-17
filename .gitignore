@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+server/.env
+client/.env
+server/iadvisors.db
+.DS_Store
+server/node_modules
+client/node_modules
+infra/terraform/terraform.tfstate
+infra/terraform/terraform.tfstate.*
+infra/terraform/tfplan
+infra/terraform/tfplan.*
+server/iadvisors.db-wal
+server/iadvisors.db-shm
+_recovery_quarantine/

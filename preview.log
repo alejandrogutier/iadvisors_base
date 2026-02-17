@@ -1,0 +1,9 @@
+
+> client@0.0.0 preview
+> vite preview --host 0.0.0.0 --port 4173
+
+You are using Node.js 18.20.3. Vite requires Node.js version 20.19+ or 22.12+. Please upgrade your Node.js version.
+Port 4173 is in use, trying another one...
+  ➜  Local:   http://localhost:4174/
+  ➜  Network: http://192.168.10.14:4174/
+  ➜  Network: http://192.168.10.19:4174/
