@@ -26,7 +26,7 @@ const FileManager = () => {
     try {
       const { data } = await api.get('/files', withBrandHeaders());
       setFiles(data.files || []);
-    } catch (error) {
+    } catch {
       antdMessage.error('No se pudieron cargar los archivos');
     } finally {
       setLoading(false);
@@ -61,7 +61,7 @@ const FileManager = () => {
       await api.delete(`/files/${fileId}`, withBrandHeaders());
       antdMessage.success('Archivo eliminado');
       loadFiles();
-    } catch (error) {
+    } catch {
       antdMessage.error('No se pudo eliminar');
     }
   };
@@ -104,7 +104,7 @@ const FileManager = () => {
       render: (_, record) => (
         <Popconfirm
           title="Eliminar archivo"
-          description="Esto eliminará el archivo del vector store"
+          description="Esto eliminará el archivo de S3 y del índice de Knowledge Base"
           onConfirm={() => handleDelete(record.id)}
         >
           <Button size="small" danger icon={<DeleteOutlined />}>
@@ -122,13 +122,13 @@ const FileManager = () => {
   return (
     <div className="vector-store-panel">
       <div className="panel-header">
-        <Typography.Title level={4}>Fuente de datos</Typography.Title>
+        <Typography.Title level={4}>Knowledge Base</Typography.Title>
         <Button icon={<ReloadOutlined />} onClick={loadFiles}>
           Actualizar
         </Button>
       </div>
       <Typography.Paragraph>
-        Sube documentos para que el asistente los use en sus respuestas.
+        Sube documentos a S3 para que Bedrock Knowledge Base los procese y los use en las respuestas.
       </Typography.Paragraph>
       <Upload.Dragger
         multiple={false}
@@ -142,7 +142,7 @@ const FileManager = () => {
         </p>
         <p className="ant-upload-text">Arrastra o haz click para seleccionar</p>
         <p className="ant-upload-hint">
-          Los archivos se agregan al vector store configurado.
+          Los archivos se cargan en S3 y disparan la ingesta de la KB de la marca.
         </p>
       </Upload.Dragger>
       <Table

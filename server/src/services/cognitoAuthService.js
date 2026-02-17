@@ -1,7 +1,12 @@
 const {
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
-  AdminSetUserPasswordCommand
+  AdminSetUserPasswordCommand,
+  AdminCreateUserCommand,
+  AdminAddUserToGroupCommand,
+  AdminRemoveUserFromGroupCommand,
+  AdminDeleteUserCommand,
+  AdminListGroupsForUserCommand
 } = require('@aws-sdk/client-cognito-identity-provider');
 
 const cognitoRegion = process.env.COGNITO_REGION || process.env.AWS_REGION || 'us-east-1';
@@ -65,6 +70,32 @@ function normalizeAuthError(error) {
   return error;
 }
 
+function normalizeAdminError(error) {
+  if (!error?.name) return error;
+  if (error.name === 'UsernameExistsException') {
+    const wrapped = new Error('COGNITO_USER_EXISTS');
+    wrapped.code = 'COGNITO_USER_EXISTS';
+    return wrapped;
+  }
+  if (error.name === 'InvalidPasswordException') {
+    const wrapped = new Error('INVALID_NEW_PASSWORD');
+    wrapped.code = 'INVALID_NEW_PASSWORD';
+    return wrapped;
+  }
+  if (error.name === 'UserNotFoundException') {
+    const wrapped = new Error('COGNITO_USER_NOT_FOUND');
+    wrapped.code = 'COGNITO_USER_NOT_FOUND';
+    return wrapped;
+  }
+  return error;
+}
+
+function normalizeRole(role) {
+  if (role === 'admin') return 'admin';
+  if (role === 'analyst') return 'analyst';
+  return 'user';
+}
+
 async function authenticateWithCognito({ email, password }) {
   ensureCognitoConfigured();
 
@@ -119,12 +150,104 @@ async function changePasswordWithCognito({ email, currentPassword, newPassword }
       })
     );
   } catch (error) {
-    if (error?.name === 'InvalidPasswordException') {
-      const wrapped = new Error('INVALID_NEW_PASSWORD');
-      wrapped.code = 'INVALID_NEW_PASSWORD';
-      throw wrapped;
+    throw normalizeAdminError(error);
+  }
+}
+
+async function listUserGroups(email) {
+  const response = await cognitoClient.send(
+    new AdminListGroupsForUserCommand({
+      UserPoolId: userPoolId,
+      Username: email,
+      Limit: 50
+    })
+  );
+  return Array.isArray(response?.Groups) ? response.Groups.map((item) => item.GroupName).filter(Boolean) : [];
+}
+
+async function updateUserRoleInCognito({ email, role }) {
+  ensureCognitoConfigured();
+  const normalizedRole = normalizeRole(role);
+
+  try {
+    const currentGroups = await listUserGroups(email);
+    const managedGroups = ['admin', 'analyst'];
+
+    for (const groupName of managedGroups) {
+      if (currentGroups.includes(groupName) && groupName !== normalizedRole) {
+        // eslint-disable-next-line no-await-in-loop
+        await cognitoClient.send(
+          new AdminRemoveUserFromGroupCommand({
+            UserPoolId: userPoolId,
+            Username: email,
+            GroupName: groupName
+          })
+        );
+      }
     }
-    throw error;
+
+    if (normalizedRole === 'admin' || normalizedRole === 'analyst') {
+      if (!currentGroups.includes(normalizedRole)) {
+        await cognitoClient.send(
+          new AdminAddUserToGroupCommand({
+            UserPoolId: userPoolId,
+            Username: email,
+            GroupName: normalizedRole
+          })
+        );
+      }
+    }
+  } catch (error) {
+    throw normalizeAdminError(error);
+  }
+}
+
+async function createUserInCognito({ email, name, password, role }) {
+  ensureCognitoConfigured();
+  try {
+    await cognitoClient.send(
+      new AdminCreateUserCommand({
+        UserPoolId: userPoolId,
+        Username: email,
+        MessageAction: 'SUPPRESS',
+        UserAttributes: [
+          { Name: 'email', Value: email },
+          { Name: 'email_verified', Value: 'true' },
+          ...(name ? [{ Name: 'name', Value: name }] : [])
+        ]
+      })
+    );
+
+    await cognitoClient.send(
+      new AdminSetUserPasswordCommand({
+        UserPoolId: userPoolId,
+        Username: email,
+        Password: password,
+        Permanent: true
+      })
+    );
+
+    await updateUserRoleInCognito({ email, role });
+  } catch (error) {
+    throw normalizeAdminError(error);
+  }
+}
+
+async function deleteUserInCognito({ email }) {
+  ensureCognitoConfigured();
+  try {
+    await cognitoClient.send(
+      new AdminDeleteUserCommand({
+        UserPoolId: userPoolId,
+        Username: email
+      })
+    );
+  } catch (error) {
+    const normalized = normalizeAdminError(error);
+    if (normalized.code === 'COGNITO_USER_NOT_FOUND') {
+      return;
+    }
+    throw normalized;
   }
 }
 
@@ -132,5 +255,8 @@ module.exports = {
   isCognitoConfigured,
   cognitoRegion,
   authenticateWithCognito,
-  changePasswordWithCognito
+  changePasswordWithCognito,
+  createUserInCognito,
+  updateUserRoleInCognito,
+  deleteUserInCognito
 };

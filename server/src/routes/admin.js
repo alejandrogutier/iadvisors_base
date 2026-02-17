@@ -1,4 +1,6 @@
+const crypto = require('crypto');
 const express = require('express');
+const { ListFoundationModelsCommand } = require('@aws-sdk/client-bedrock');
 const {
   listUsersWithStats,
   createUser,
@@ -9,137 +11,99 @@ const {
   listMessagesByUser,
   findUserById,
   getUserBrands,
-  listBrands,
-  setUserBrands
+  setUserBrands,
+  findUserByEmail,
+  updateBrand
 } = require('../db');
-const { client } = require('../openaiClient');
 const { requireBrand } = require('../utils/brandContext');
-
-const ASSISTANT_MODEL_PREFIXES = ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'];
-const DISALLOWED_MODEL_KEYWORDS = [
-  'dall-e',
-  'tts',
-  'audio',
-  'image',
-  'vision',
-  'whisper',
-  'realtime',
-  'search',
-  'transcribe',
-  'codex',
-  'o1',
-  'o3',
-  'o4'
-];
-
-function isAssistantCompatibleModel(modelId = '') {
-  const normalized = modelId.toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  if (DISALLOWED_MODEL_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
-    return false;
-  }
-  if (normalized.startsWith('ft:')) {
-    return true;
-  }
-  return ASSISTANT_MODEL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-}
-
-
-async function listAvailableModels() {
-  try {
-    const response = await client.models.list();
-    if (!response?.data) {
-      return [];
-    }
-    return response.data.map((model) => ({
-      id: model.id,
-      created: model.created,
-      owned_by: model.owned_by
-    }));
-  } catch (error) {
-    console.error('No se pudieron consultar los modelos disponibles', error);
-    return [];
-  }
-}
-
-function sanitizeMetadata(metadata) {
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-    return undefined;
-  }
-  const normalized = {};
-  Object.entries(metadata).forEach(([key, value]) => {
-    const trimmedKey = typeof key === 'string' ? key.trim() : '';
-    if (!trimmedKey) return;
-    normalized[trimmedKey] = value == null ? '' : String(value);
-  });
-  return normalized;
-}
-
-function sanitizeTools(tools) {
-  if (!Array.isArray(tools)) {
-    return undefined;
-  }
-  const normalized = tools
-    .map((tool) => {
-      if (!tool || typeof tool !== 'object' || typeof tool.type !== 'string') {
-        return null;
-      }
-      return {
-        ...tool,
-        type: tool.type
-      };
-    })
-    .filter(Boolean);
-  return normalized;
-}
-
-function sanitizeToolResources(toolResources) {
-  if (!toolResources || typeof toolResources !== 'object' || Array.isArray(toolResources)) {
-    return undefined;
-  }
-  const normalized = {};
-  Object.entries(toolResources).forEach(([key, value]) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-    if (key === 'file_search') {
-      const vectorIds = Array.isArray(value.vector_store_ids)
-        ? value.vector_store_ids
-            .map((id) => (typeof id === 'string' ? id.trim() : ''))
-            .filter(Boolean)
-        : [];
-      normalized.file_search = {
-        ...value,
-        vector_store_ids: vectorIds
-      };
-    } else {
-      normalized[key] = value;
-    }
-  });
-  return normalized;
-}
-
-function normalizeResponseFormat(value) {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (value === null) {
-    return null;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed || trimmed === 'default') {
-      return null;
-    }
-    return { type: trimmed };
-  }
-  if (typeof value === 'object') {
-    return value;
-  }
-  return undefined;
-}
+const { bedrockClient } = require('../aws/bedrockClient');
+const {
+  createUserInCognito,
+  updateUserRoleInCognito,
+  deleteUserInCognito
+} = require('../services/cognitoAuthService');
 
 const router = express.Router();
+
+function randomLocalPassword() {
+  return `local-${crypto.randomBytes(24).toString('hex')}`;
+}
+
+function normalizeRole(role) {
+  if (role === 'admin') return 'admin';
+  if (role === 'analyst') return 'analyst';
+  return 'user';
+}
+
+function buildAssistantPayload(brand) {
+  const settings = brand.assistantSettings || {};
+  return {
+    id: brand.id,
+    name: brand.name,
+    description: brand.description || '',
+    instructions: settings.instructions || '',
+    model: brand.modelId || null,
+    temperature:
+      typeof settings.temperature === 'number' && !Number.isNaN(settings.temperature)
+        ? settings.temperature
+        : null,
+    top_p:
+      typeof settings.topP === 'number' && !Number.isNaN(settings.topP)
+        ? settings.topP
+        : null,
+    max_tokens:
+      typeof settings.maxTokens === 'number' && !Number.isNaN(settings.maxTokens)
+        ? settings.maxTokens
+        : null,
+    guardrail_id: brand.guardrailId || null,
+    knowledge_base_id: brand.knowledgeBaseId || null,
+    knowledge_base_status: brand.knowledgeBaseStatus || null,
+    tool_resources: {
+      knowledge_base: {
+        knowledge_base_id: brand.knowledgeBaseId || null,
+        data_source_id: brand.kbDataSourceId || null,
+        s3_prefix: brand.kbS3Prefix || null
+      }
+    },
+    tools: brand.knowledgeBaseId ? [{ type: 'knowledge_base_retrieval' }] : [],
+    updated_at: Date.now()
+  };
+}
+
+async function listAvailableModels() {
+  const fallbackModels = (process.env.BEDROCK_AVAILABLE_MODELS || process.env.BEDROCK_MODEL_ID_DEFAULT || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((id) => ({ id, providerName: 'configured', outputModalities: ['TEXT'] }));
+
+  try {
+    const response = await bedrockClient.send(
+      new ListFoundationModelsCommand({
+        byOutputModality: 'TEXT'
+      })
+    );
+    const models = Array.isArray(response?.modelSummaries) ? response.modelSummaries : [];
+    const normalized = models
+      .filter((model) => model?.modelId)
+      .map((model) => ({
+        id: model.modelId,
+        providerName: model.providerName || null,
+        inputModalities: model.inputModalities || [],
+        outputModalities: model.outputModalities || [],
+        status: model.modelLifecycle?.status || null
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    if (normalized.length) {
+      return normalized;
+    }
+    return fallbackModels;
+  } catch (error) {
+    console.error('No se pudieron listar modelos de Bedrock', error.message);
+    return fallbackModels;
+  }
+}
 
 router.get('/users', (req, res) => {
   const brand = requireBrand(req, res);
@@ -223,38 +187,79 @@ router.get('/users/:userId/messages', (req, res) => {
   }
 });
 
-router.post('/users', (req, res) => {
+router.post('/users', async (req, res) => {
   const { name, email, password, role, brandIds, defaultBrandId } = req.body;
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'Nombre, correo y contraseña son requeridos' });
   }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedRole = normalizeRole(role);
+
   try {
-    const user = createUser({ name, email, password, role });
+    if (findUserByEmail(normalizedEmail)) {
+      return res.status(409).json({ error: 'El correo ya está registrado' });
+    }
+
+    await createUserInCognito({
+      email: normalizedEmail,
+      name,
+      password,
+      role: normalizedRole
+    });
+
+    const user = createUser({
+      name,
+      email: normalizedEmail,
+      password: randomLocalPassword(),
+      role: normalizedRole,
+      enforceRole: true
+    });
+
     if (Array.isArray(brandIds) && brandIds.length) {
       setUserBrands(user.id, brandIds, defaultBrandId || brandIds[0]);
     }
+
     res.json({ user: sanitizeUser(findUserById(user.id)) });
   } catch (error) {
     if (error.code === 'EMAIL_EXISTS') {
       return res.status(409).json({ error: 'El correo ya está registrado' });
     }
-    if (error.code === 'PASSWORD_REQUIRED') {
-      return res.status(400).json({ error: 'La contraseña es requerida' });
-    }
     if (error.code === 'BRAND_NOT_FOUND') {
       return res.status(404).json({ error: 'Marca no encontrada' });
+    }
+    if (error.code === 'COGNITO_NOT_CONFIGURED') {
+      return res.status(500).json({ error: 'Cognito no está configurado en el backend' });
+    }
+    if (error.code === 'COGNITO_USER_EXISTS') {
+      return res.status(409).json({ error: 'El usuario ya existe en Cognito' });
+    }
+    if (error.code === 'INVALID_NEW_PASSWORD') {
+      return res.status(400).json({ error: 'La contraseña no cumple la política de Cognito' });
     }
     res.status(500).json({ error: error.message });
   }
 });
 
-router.patch('/users/:userId/role', (req, res) => {
+router.patch('/users/:userId/role', async (req, res) => {
   const { role } = req.body;
   if (!role) {
     return res.status(400).json({ error: 'El rol es requerido' });
   }
+  const normalizedRole = normalizeRole(role);
+
   try {
-    const updated = updateUserRole({ userId: req.params.userId, role });
+    const existing = findUserById(req.params.userId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    await updateUserRoleInCognito({
+      email: existing.email,
+      role: normalizedRole
+    });
+
+    const updated = updateUserRole({ userId: req.params.userId, role: normalizedRole });
     res.json({ user: sanitizeUser(updated) });
   } catch (error) {
     if (error.code === 'INVALID_ROLE') {
@@ -265,6 +270,9 @@ router.patch('/users/:userId/role', (req, res) => {
     }
     if (error.code === 'LAST_ADMIN') {
       return res.status(409).json({ error: 'Debe existir al menos un administrador' });
+    }
+    if (error.code === 'COGNITO_NOT_CONFIGURED') {
+      return res.status(500).json({ error: 'Cognito no está configurado en el backend' });
     }
     res.status(500).json({ error: error.message });
   }
@@ -287,8 +295,14 @@ router.patch('/users/:userId/brands', (req, res) => {
   }
 });
 
-router.delete('/users/:userId', (req, res) => {
+router.delete('/users/:userId', async (req, res) => {
   try {
+    const existing = findUserById(req.params.userId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    await deleteUserInCognito({ email: existing.email });
     deleteUser(req.params.userId);
     res.json({ ok: true });
   } catch (error) {
@@ -298,6 +312,9 @@ router.delete('/users/:userId', (req, res) => {
     if (error.code === 'LAST_ADMIN') {
       return res.status(409).json({ error: 'Debe existir al menos un administrador' });
     }
+    if (error.code === 'COGNITO_NOT_CONFIGURED') {
+      return res.status(500).json({ error: 'Cognito no está configurado en el backend' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -306,88 +323,55 @@ router.get('/assistant', async (req, res) => {
   const brand = requireBrand(req, res);
   if (!brand) return;
   try {
-    const assistant = await client.beta.assistants.retrieve(brand.assistantId);
     const models = await listAvailableModels();
+    const assistant = buildAssistantPayload(brand);
     res.json({ assistant, models });
   } catch (error) {
-    const message = error.response?.data?.error?.message || error.message;
-    const status = error.response?.status || error.status || 500;
-    res.status(status).json({ error: message });
+    res.status(500).json({ error: error.message });
   }
 });
 
 router.put('/assistant', async (req, res) => {
   const brand = requireBrand(req, res);
   if (!brand) return;
+
   const {
-    name,
-    description,
-    instructions,
     model,
+    instructions,
     temperature,
     top_p: topP,
-    metadata,
-    tools,
-    response_format: responseFormat,
-    tool_resources: toolResources
-  } = req.body;
+    max_tokens: maxTokens,
+    guardrail_id: guardrailId,
+    knowledge_base_id: knowledgeBaseId,
+    knowledge_base_status: knowledgeBaseStatus
+  } = req.body || {};
 
   const updates = {};
-  if (typeof name === 'string') {
-    updates.name = name;
-  }
-  if (typeof description === 'string') {
-    updates.description = description;
+  if (typeof model === 'string' && model.trim()) {
+    updates.modelId = model.trim();
+    updates.assistantId = model.trim();
   }
   if (typeof instructions === 'string') {
-    updates.instructions = instructions;
-  }
-  if (typeof model === 'string') {
-    if (!isAssistantCompatibleModel(model)) {
-      return res.status(400).json({ error: 'El modelo no es compatible con la API de asistentes' });
-    }
-    updates.model = model;
+    updates.assistantInstructions = instructions;
   }
   if (typeof temperature === 'number' && !Number.isNaN(temperature)) {
-    updates.temperature = temperature;
+    updates.assistantTemperature = temperature;
   }
   if (typeof topP === 'number' && !Number.isNaN(topP)) {
-    updates.top_p = topP;
+    updates.assistantTopP = topP;
   }
-
-  if (Object.prototype.hasOwnProperty.call(req.body, 'metadata')) {
-    if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
-      updates.metadata = sanitizeMetadata(metadata);
-    } else if (metadata == null) {
-      updates.metadata = {};
-    } else {
-      return res.status(400).json({ error: 'metadata debe ser un objeto' });
-    }
+  if (typeof maxTokens === 'number' && !Number.isNaN(maxTokens)) {
+    updates.assistantMaxTokens = maxTokens;
   }
-
-  if (Object.prototype.hasOwnProperty.call(req.body, 'tools')) {
-    if (!Array.isArray(tools)) {
-      return res.status(400).json({ error: 'tools debe ser un arreglo' });
-    }
-    updates.tools = sanitizeTools(tools);
+  if (typeof guardrailId === 'string') {
+    updates.guardrailId = guardrailId.trim() || null;
   }
-
-  if (Object.prototype.hasOwnProperty.call(req.body, 'tool_resources')) {
-    if (toolResources && typeof toolResources === 'object' && !Array.isArray(toolResources)) {
-      updates.tool_resources = sanitizeToolResources(toolResources);
-    } else if (toolResources == null) {
-      updates.tool_resources = {};
-    } else {
-      return res.status(400).json({ error: 'tool_resources debe ser un objeto' });
-    }
+  if (typeof knowledgeBaseId === 'string') {
+    updates.knowledgeBaseId = knowledgeBaseId.trim() || null;
+    updates.vectorStoreId = knowledgeBaseId.trim() || null;
   }
-
-  if (Object.prototype.hasOwnProperty.call(req.body, 'response_format')) {
-    const normalizedResponseFormat = normalizeResponseFormat(responseFormat);
-    if (normalizedResponseFormat === undefined) {
-      return res.status(400).json({ error: 'response_format inválido' });
-    }
-    updates.response_format = normalizedResponseFormat;
+  if (typeof knowledgeBaseStatus === 'string') {
+    updates.knowledgeBaseStatus = knowledgeBaseStatus.trim() || null;
   }
 
   if (!Object.keys(updates).length) {
@@ -397,12 +381,14 @@ router.put('/assistant', async (req, res) => {
   }
 
   try {
-    const assistant = await client.beta.assistants.update(brand.assistantId, updates);
+    const updatedBrand = updateBrand(brand.id, updates);
+    const assistant = buildAssistantPayload(updatedBrand);
     res.json({ assistant });
   } catch (error) {
-    const message = error.response?.data?.error?.message || error.message;
-    const status = error.response?.status || error.status || 500;
-    res.status(status).json({ error: message });
+    if (error.code === 'BRAND_NOT_FOUND') {
+      return res.status(404).json({ error: 'Marca no encontrada' });
+    }
+    res.status(500).json({ error: error.message });
   }
 });
 

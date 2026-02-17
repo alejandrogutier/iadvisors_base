@@ -1,12 +1,12 @@
 # Infraestructura como código – Terraform
 
-Este directorio contiene una configuración de Terraform lista para desplegar el entorno pre-productivo descrito en `ARCHITECTURE.md`. Los recursos creados incluyen VPC multi-AZ, subredes públicas/privadas, NAT Gateways, S3 + CloudFront para el frontend, ECS Fargate detrás de un ALB, Cognito (User Pool + App Client + grupos), Aurora PostgreSQL Serverless v2 con RDS Proxy, Secrets Manager/Parameter Store, CloudWatch (logs, alarms y dashboard), WAF, EventBridge para el job de mediciones y buckets auxiliares para adjuntos y backups.
+Este directorio contiene una configuración de Terraform lista para desplegar el entorno pre-productivo descrito en `ARCHITECTURE.md`. Los recursos creados incluyen VPC multi-AZ, subredes públicas/privadas, NAT Gateways, S3 + CloudFront para el frontend, ECS Fargate detrás de un ALB, Cognito (User Pool + App Client + grupos), Aurora PostgreSQL Serverless v2 con RDS Proxy, Bedrock + OpenSearch Serverless para KB vectorial, Secrets Manager/Parameter Store, CloudWatch (logs, alarms y dashboard), WAF, EventBridge para el job de mediciones y buckets auxiliares.
 
 ## Requisitos previos
 
 - Terraform >= 1.6
 - AWS CLI configurado con un perfil con permisos para crear los recursos mencionados
-- Variables sensibles (OpenAI y catálogos de marcas) listas para pasarse mediante `terraform.tfvars` o variables de entorno
+- Variables sensibles (Bedrock y catálogos de marcas) listas para pasarse mediante `terraform.tfvars` o variables de entorno
 
 ## Estructura
 
@@ -22,8 +22,9 @@ Este directorio contiene una configuración de Terraform lista para desplegar el
 | `environment` | Ambiente desplegado (`preprod`, `prod`, etc.) |
 | `aws_region` | Región principal (por defecto `us-east-1`) |
 | `alb_certificate_arn` | Certificado ACM opcional para habilitar HTTPS en el ALB |
-| `openai_api_key`, `openai_assistant_id`, `openai_vector_store_id` | Credenciales que se almacenan en Secrets Manager |
-| `brand_catalog` | Mapa con las marcas iniciales (IDs, slugs, asistentes y vector stores) |
+| `bedrock_model_id_default`, `bedrock_measurement_model`, `bedrock_embedding_model_arn` | Configuración base de modelos Bedrock |
+| `bedrock_kb_vector_index_name` | Nombre del índice vectorial en OpenSearch Serverless |
+| `brand_catalog` | Mapa con marcas iniciales (IDs, slugs, modelo por defecto y KB opcional) |
 | `measurement_schedule_expression` | Cron de EventBridge para el job de mediciones |
 | `aurora_min_capacity`, `aurora_max_capacity` | Límites de Aurora Serverless v2 |
 | `aurora_engine_version` | Versión de Aurora PostgreSQL (por defecto `15.13`) |
@@ -34,15 +35,14 @@ Define los valores sensibles en un archivo `terraform.tfvars` que **no** debe ve
 ```hcl
 project_name  = "iadvisors-bayer"
 environment   = "preprod"
-openai_api_key = "sk-..."
-openai_assistant_id = "asst_..."
-openai_vector_store_id = "vs_..."
+bedrock_model_id_default = "anthropic.claude-3-5-haiku-20241022-v1:0"
+bedrock_measurement_model = "anthropic.claude-3-5-haiku-20241022-v1:0"
+bedrock_embedding_model_arn = "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
 brand_catalog = {
   gynocanesten = {
-    id                = "gynocanesten"
-    slug              = "gynocanesten"
-    default_assistant = "asst_..."
-    vector_store      = "vs_..."
+    id            = "gynocanesten"
+    slug          = "gynocanesten"
+    default_model = "anthropic.claude-3-5-haiku-20241022-v1:0"
   }
 }
 ```
@@ -56,7 +56,7 @@ terraform plan -out tfplan
 terraform apply tfplan
 ```
 
-Tras la aplicación se mostrará el dominio asignado por CloudFront (`cloudfront_domain`), el DNS del ALB (`alb_dns_name`), los buckets, el repositorio ECR para publicar la imagen del backend y los IDs de Cognito (`cognito_user_pool_id`, `cognito_user_pool_client_id`).
+Tras la aplicación se mostrará el dominio asignado por CloudFront (`cloudfront_domain`), el DNS del ALB (`alb_dns_name`), buckets (`frontend_bucket`, `uploads_bucket`, `kb_bucket`), colección vectorial (`kb_collection_arn`), repositorio ECR y IDs de Cognito (`cognito_user_pool_id`, `cognito_user_pool_client_id`).
 
 ## Tareas posteriores
 

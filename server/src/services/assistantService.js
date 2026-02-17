@@ -1,3 +1,5 @@
+const { v4: uuid } = require('uuid');
+const { ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 const {
   saveMessage,
   createThreadRecord,
@@ -9,49 +11,9 @@ const {
   getLatestThreadForUser,
   ensureUserBrandAccess
 } = require('../db');
-const { client } = require('../openaiClient');
 const { buildCommunicationProfileContext } = require('../data/communicationProfiles');
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function renderTextFromContent(contentBlocks) {
-  if (!Array.isArray(contentBlocks)) return '';
-  return contentBlocks
-    .map((block) => {
-      if (block.type === 'text' && block.text) {
-        return block.text.value;
-      }
-      if (block.type === 'output_text' && block.output_text) {
-        return block.output_text.map((t) => t.text).join('\n');
-      }
-      if (block.type === 'message' && block.message) {
-        return renderTextFromContent(block.message);
-      }
-      if (block?.type === 'tool_call' && block?.tool_call?.output) {
-        return block.tool_call.output;
-      }
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-async function waitForRun(threadId, runId) {
-  while (true) {
-    const run = await client.beta.threads.runs.retrieve(runId, { thread_id: threadId });
-    if (
-      run.status === 'completed' ||
-      run.status === 'failed' ||
-      run.status === 'cancelled' ||
-      run.status === 'expired'
-    ) {
-      return run;
-    }
-    await delay(1500);
-  }
-}
+const { retrieveKnowledgeContext } = require('./knowledgeBaseService');
+const { bedrockRuntimeClient } = require('../aws/bedrockRuntimeClient');
 
 function ensureThreadOwnership(threadId, userId, brandId) {
   const thread = getThreadById(threadId);
@@ -63,17 +25,136 @@ function ensureThreadOwnership(threadId, userId, brandId) {
   return thread;
 }
 
+function extractAssistantText(contentBlocks = []) {
+  if (!Array.isArray(contentBlocks)) {
+    return '';
+  }
+  return contentBlocks
+    .map((item) => {
+      if (typeof item?.text === 'string') {
+        return item.text;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function parseMetadata(rawValue) {
+  if (!rawValue || typeof rawValue !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function inferBedrockImageFormat(mimetype = '', fallbackName = '') {
+  const normalizedMime = String(mimetype || '').toLowerCase();
+  if (normalizedMime.includes('png')) return 'png';
+  if (normalizedMime.includes('jpeg') || normalizedMime.includes('jpg')) return 'jpeg';
+  if (normalizedMime.includes('webp')) return 'webp';
+  if (normalizedMime.includes('gif')) return 'gif';
+  const ext = String(fallbackName || '')
+    .split('.')
+    .pop()
+    .toLowerCase();
+  if (['png', 'jpeg', 'jpg', 'webp', 'gif'].includes(ext)) {
+    return ext === 'jpg' ? 'jpeg' : ext;
+  }
+  return 'png';
+}
+
+function buildConversationMessages(history, imageAttachment) {
+  const messages = [];
+
+  history.forEach((record) => {
+    const role = record.role === 'assistant' ? 'assistant' : record.role === 'user' ? 'user' : null;
+    if (!role) return;
+
+    const content = [];
+    if (typeof record.content === 'string' && record.content.trim()) {
+      content.push({ text: record.content.trim() });
+    }
+
+    if (role === 'user') {
+      const metadata = parseMetadata(record.display_metadata);
+      const imageBase64 = metadata?.imageBase64;
+      if (imageBase64) {
+        const format = inferBedrockImageFormat(metadata.imageMimeType, metadata.imageFilename);
+        content.push({
+          image: {
+            format,
+            source: {
+              bytes: Buffer.from(imageBase64, 'base64')
+            }
+          }
+        });
+      }
+    }
+
+    if (!content.length) {
+      return;
+    }
+
+    messages.push({
+      role,
+      content
+    });
+  });
+
+  if (imageAttachment?.bytesBase64 && messages.length) {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.role === 'user') {
+      lastMessage.content.push({
+        image: {
+          format: inferBedrockImageFormat(imageAttachment.mimeType, imageAttachment.filename),
+          source: {
+            bytes: Buffer.from(imageAttachment.bytesBase64, 'base64')
+          }
+        }
+      });
+    }
+  }
+
+  return messages;
+}
+
+function toInferenceConfig(brand) {
+  const settings = brand.assistantSettings || {};
+  const config = {};
+
+  if (typeof settings.temperature === 'number' && !Number.isNaN(settings.temperature)) {
+    config.temperature = settings.temperature;
+  }
+  if (typeof settings.topP === 'number' && !Number.isNaN(settings.topP)) {
+    config.topP = settings.topP;
+  }
+  if (typeof settings.maxTokens === 'number' && Number.isInteger(settings.maxTokens) && settings.maxTokens > 0) {
+    config.maxTokens = settings.maxTokens;
+  }
+
+  return Object.keys(config).length ? config : undefined;
+}
+
 async function createThread({ userId, brand, title }) {
   const user = findUserById(userId);
   if (!user) {
     throw new Error('User not found');
   }
   ensureUserBrandAccess(userId, brand.id);
-  const thread = await client.beta.threads.create();
+
   return createThreadRecord({
     userId,
     brandId: brand.id,
-    openaiThreadId: thread.id,
+    openaiThreadId: `bedrock-${uuid()}`,
     title: title || `Conversación ${new Date().toLocaleString('es-MX')}`
   });
 }
@@ -93,11 +174,24 @@ async function sendMessage({
     throw new Error('User not found');
   }
   ensureUserBrandAccess(userId, brand.id);
+
   const trimmedMessage = typeof message === 'string' ? message.trim() : '';
-  const hasImageAttachment = Boolean(imageAttachment?.fileId);
+  const hasImageAttachment = Boolean(imageAttachment?.bytesBase64);
   if (!trimmedMessage && !hasImageAttachment) {
     throw new Error('Message is required');
   }
+
+  const modelId =
+    brand.modelId ||
+    brand.assistantId ||
+    process.env.BEDROCK_MODEL_ID_DEFAULT ||
+    process.env.DEFAULT_BRAND_MODEL_ID ||
+    null;
+
+  if (!modelId) {
+    throw new Error('No existe modelId configurado para la marca');
+  }
+
   let targetThread = threadId
     ? ensureThreadOwnership(threadId, userId, brand.id)
     : getLatestThreadForUser(userId, brand.id);
@@ -108,6 +202,7 @@ async function sendMessage({
     err.code = 'THREAD_NOT_FOUND';
     throw err;
   }
+
   const supplemental = [];
   if (typeof formatContext === 'string' && formatContext.trim()) {
     supplemental.push(formatContext.trim());
@@ -116,71 +211,88 @@ async function sendMessage({
   if (profileContext) {
     supplemental.push(profileContext);
   }
-  const textSections = [trimmedMessage, ...supplemental].filter(Boolean);
-  const payloadMessage = textSections.join('\n\n');
-  const contentParts = [];
-  if (payloadMessage) {
-    contentParts.push({ type: 'text', text: payloadMessage });
+
+  const payloadMessage = [trimmedMessage, ...supplemental].filter(Boolean).join('\n\n');
+
+  const metadataPayload =
+    displayMetadata && typeof displayMetadata === 'object' && !Array.isArray(displayMetadata)
+      ? { ...displayMetadata }
+      : {};
+
+  if (imageAttachment?.bytesBase64) {
+    metadataPayload.imageFilename = imageAttachment.filename || metadataPayload.imageFilename;
+    metadataPayload.imageSize = imageAttachment.size || metadataPayload.imageSize;
+    metadataPayload.imageMimeType = imageAttachment.mimeType || metadataPayload.imageMimeType;
+    metadataPayload.imageBase64 = imageAttachment.bytesBase64;
   }
-  if (hasImageAttachment) {
-    contentParts.push({
-      type: 'image_file',
-      image_file: { file_id: imageAttachment.fileId }
-    });
-  }
-  const sentMessage = await client.beta.threads.messages.create(
-    targetThread.openai_thread_id,
-    {
-      role: 'user',
-      content: contentParts
-    }
-  );
+
   saveMessage({
     threadId: targetThread.id,
     brandId: brand.id,
     role: 'user',
-    content: payloadMessage || (hasImageAttachment ? '[Imagen adjunta]' : ''),
-    openaiMessageId: sentMessage.id,
-    displayMetadata: displayMetadata || null
+    content: payloadMessage || '[Imagen adjunta]',
+    openaiMessageId: `usr-${uuid()}`,
+    displayMetadata: Object.keys(metadataPayload).length ? metadataPayload : null
   });
 
-  const run = await client.beta.threads.runs.create(targetThread.openai_thread_id, {
-    assistant_id: brand.assistantId,
-    metadata: {
-      user_id: userId,
-      user_email: user.email
-    }
-  });
+  const history = getMessagesByThread(targetThread.id);
+  const conversationMessages = buildConversationMessages(history, imageAttachment);
+  const retrievalSeed = trimmedMessage || payloadMessage || 'Consulta de conocimiento';
 
-  const finalRun = await waitForRun(targetThread.openai_thread_id, run.id);
-  if (finalRun.status !== 'completed') {
-    throw new Error(`Run ended with status ${finalRun.status}`);
-  }
-
-  const messageList = await client.beta.threads.messages.list(
-    targetThread.openai_thread_id,
-    { order: 'asc' }
-  );
-
-  const assistantMessages = [];
-  for (const item of messageList.data) {
-    if (item.role !== 'assistant' || item.run_id !== finalRun.id) continue;
-    const text = renderTextFromContent(item.content);
-    const saved = saveMessage({
-      threadId: targetThread.id,
-       brandId: brand.id,
-      role: 'assistant',
-      content: text,
-      openaiMessageId: item.id
+  let knowledgeContext = '';
+  try {
+    knowledgeContext = await retrieveKnowledgeContext({
+      knowledgeBaseId: brand.knowledgeBaseId,
+      prompt: retrievalSeed,
+      topK: parseInt(process.env.KB_RETRIEVAL_TOP_K || '4', 10)
     });
-    assistantMessages.push(saved);
+  } catch (error) {
+    console.error('No se pudo recuperar contexto de Knowledge Base', error.message);
   }
+
+  const systemParts = [
+    'Eres un asistente especializado para equipos farmacéuticos. Responde en español con precisión clínica y comercial.',
+    'Si no tienes evidencia suficiente, indícalo de forma explícita y sugiere el siguiente paso.'
+  ];
+
+  if (brand.assistantSettings?.instructions) {
+    systemParts.push(brand.assistantSettings.instructions);
+  }
+
+  if (knowledgeContext) {
+    systemParts.push(`Contexto recuperado de la base de conocimiento:\n${knowledgeContext}`);
+  }
+
+  const commandInput = {
+    modelId,
+    system: systemParts.filter(Boolean).map((text) => ({ text })),
+    messages: conversationMessages,
+    inferenceConfig: toInferenceConfig(brand)
+  };
+
+  if (brand.guardrailId) {
+    commandInput.guardrailConfig = {
+      guardrailIdentifier: brand.guardrailId,
+      guardrailVersion: process.env.BEDROCK_GUARDRAIL_VERSION || 'DRAFT'
+    };
+  }
+
+  const response = await bedrockRuntimeClient.send(new ConverseCommand(commandInput));
+  const assistantText = extractAssistantText(response?.output?.message?.content) || 'No encontré respuesta para esta consulta.';
+
+  const savedAssistantMessage = saveMessage({
+    threadId: targetThread.id,
+    brandId: brand.id,
+    role: 'assistant',
+    content: assistantText,
+    openaiMessageId: `asst-${uuid()}`
+  });
 
   return {
     threadId: targetThread.id,
     messages: getMessagesByThread(targetThread.id),
-    lastRunId: finalRun.id,
-    assistantMessages
+    lastRunId: response?.ResponseMetadata?.RequestId || null,
+    assistantMessages: [savedAssistantMessage]
   };
 }
 

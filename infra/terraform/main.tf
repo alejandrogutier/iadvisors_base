@@ -206,6 +206,73 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   }
 }
 
+resource "aws_s3_bucket" "kb" {
+  bucket_prefix = "${local.name_prefix}-kb"
+}
+
+resource "aws_s3_bucket_public_access_block" "kb" {
+  bucket                  = aws_s3_bucket.kb.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "kb" {
+  bucket = aws_s3_bucket.kb.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_opensearchserverless_security_policy" "kb_encryption" {
+  name = "${replace(local.name_prefix, "-", "")}kbenc"
+  type = "encryption"
+  policy = jsonencode({
+    Rules = [
+      {
+        ResourceType = "collection",
+        Resource     = ["collection/${local.name_prefix}-kb"]
+      }
+    ],
+    AWSOwnedKey = true
+  })
+}
+
+resource "aws_opensearchserverless_security_policy" "kb_network" {
+  name = "${replace(local.name_prefix, "-", "")}kbnet"
+  type = "network"
+  policy = jsonencode([
+    {
+      Description = "Allow AWS services and private VPC paths",
+      Rules = [
+        {
+          ResourceType = "collection",
+          Resource     = ["collection/${local.name_prefix}-kb"]
+        },
+        {
+          ResourceType = "dashboard",
+          Resource     = ["collection/${local.name_prefix}-kb"]
+        }
+      ],
+      AllowFromPublic = true
+    }
+  ])
+}
+
+resource "aws_opensearchserverless_collection" "kb_vector" {
+  name = "${local.name_prefix}-kb"
+  type = "VECTORSEARCH"
+
+  depends_on = [
+    aws_opensearchserverless_security_policy.kb_encryption,
+    aws_opensearchserverless_security_policy.kb_network
+  ]
+}
+
 resource "aws_cloudfront_origin_access_control" "frontend" {
   name                              = "${local.name_prefix}-oac"
   description                       = "Acceso privado al bucket del frontend"
@@ -448,20 +515,6 @@ resource "aws_secretsmanager_secret_version" "aurora" {
   })
 }
 
-resource "aws_secretsmanager_secret" "openai" {
-  name = "${local.name_prefix}-openai"
-}
-
-resource "aws_secretsmanager_secret_version" "openai" {
-  secret_id = aws_secretsmanager_secret.openai.id
-
-  secret_string = jsonencode({
-    apiKey        = var.openai_api_key
-    assistantId   = var.openai_assistant_id
-    vectorStoreId = var.openai_vector_store_id
-  })
-}
-
 resource "aws_ssm_parameter" "brand_catalog" {
   name  = "/${local.name_prefix}/brands"
   type  = "String"
@@ -523,6 +576,61 @@ resource "aws_cognito_user_group" "analyst" {
   name         = "analyst"
   description  = "Analistas iAdvisors"
   precedence   = 2
+}
+
+resource "aws_iam_role" "bedrock_kb" {
+  name = "${local.name_prefix}-bedrock-kb-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "bedrock.amazonaws.com" },
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "bedrock_kb" {
+  name = "${local.name_prefix}-bedrock-kb-policy"
+  role = aws_iam_role.bedrock_kb.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
+        Resource = [
+          aws_s3_bucket.kb.arn,
+          "${aws_s3_bucket.kb.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "bedrock:InvokeModel"
+        ],
+        Resource = [
+          var.bedrock_embedding_model_arn
+        ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "aoss:APIAccessAll"
+        ],
+        Resource = [
+          aws_opensearchserverless_collection.kb_vector.arn
+        ]
+      }
+    ]
+  })
 }
 
 ###############################
@@ -815,7 +923,6 @@ resource "aws_iam_role_policy" "ecs_secrets" {
           "ssm:GetParameters"
         ],
         Resource = [
-          aws_secretsmanager_secret.openai.arn,
           aws_secretsmanager_secret.aurora.arn,
           aws_ssm_parameter.brand_catalog.arn,
           aws_ssm_parameter.measurement_flag.arn
@@ -825,9 +932,50 @@ resource "aws_iam_role_policy" "ecs_secrets" {
         Effect = "Allow",
         Action = [
           "cognito-idp:InitiateAuth",
-          "cognito-idp:AdminSetUserPassword"
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminListGroupsForUser"
         ],
         Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ],
+        Resource = [
+          aws_s3_bucket.kb.arn,
+          "${aws_s3_bucket.kb.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "bedrock:ListFoundationModels",
+          "bedrock:InvokeModel",
+          "bedrock:Retrieve",
+          "bedrock:RetrieveAndGenerate",
+          "bedrock:CreateKnowledgeBase",
+          "bedrock:CreateDataSource",
+          "bedrock:StartIngestionJob",
+          "bedrock:GetIngestionJob"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "aoss:APIAccessAll"
+        ],
+        Resource = [
+          aws_opensearchserverless_collection.kb_vector.arn
+        ]
       }
     ]
   })
@@ -848,7 +996,6 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
           "ssm:GetParameters"
         ],
         Resource = [
-          aws_secretsmanager_secret.openai.arn,
           aws_secretsmanager_secret.aurora.arn,
           aws_ssm_parameter.brand_catalog.arn,
           aws_ssm_parameter.measurement_flag.arn
@@ -856,6 +1003,32 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
       }
     ]
   })
+}
+
+resource "aws_opensearchserverless_access_policy" "kb_data" {
+  name = "${replace(local.name_prefix, "-", "")}kbdata"
+  type = "data"
+  policy = jsonencode([
+    {
+      Description = "Access for ECS task and Bedrock KB role",
+      Rules = [
+        {
+          ResourceType = "collection",
+          Resource     = ["collection/${aws_opensearchserverless_collection.kb_vector.name}"],
+          Permission   = ["aoss:*"]
+        },
+        {
+          ResourceType = "index",
+          Resource     = ["index/${aws_opensearchserverless_collection.kb_vector.name}/*"],
+          Permission   = ["aoss:*"]
+        }
+      ],
+      Principal = [
+        aws_iam_role.ecs_task.arn,
+        aws_iam_role.bedrock_kb.arn
+      ]
+    }
+  ])
 }
 
 resource "aws_ecr_repository" "backend" {
@@ -888,6 +1061,54 @@ locals {
     {
       name  = "COGNITO_REGION"
       value = var.aws_region
+    },
+    {
+      name  = "AI_PROVIDER"
+      value = "bedrock"
+    },
+    {
+      name  = "RAG_ENABLED"
+      value = "true"
+    },
+    {
+      name  = "WRITE_FREEZE"
+      value = "false"
+    },
+    {
+      name  = "BEDROCK_REGION"
+      value = var.aws_region
+    },
+    {
+      name  = "BEDROCK_MODEL_ID_DEFAULT"
+      value = var.bedrock_model_id_default
+    },
+    {
+      name  = "BEDROCK_MEASUREMENT_MODEL"
+      value = var.bedrock_measurement_model
+    },
+    {
+      name  = "BEDROCK_EMBEDDING_MODEL_ARN"
+      value = var.bedrock_embedding_model_arn
+    },
+    {
+      name  = "DEFAULT_BRAND_MODEL_ID"
+      value = var.bedrock_model_id_default
+    },
+    {
+      name  = "KB_BUCKET"
+      value = aws_s3_bucket.kb.bucket
+    },
+    {
+      name  = "BEDROCK_KB_ROLE_ARN"
+      value = aws_iam_role.bedrock_kb.arn
+    },
+    {
+      name  = "BEDROCK_KB_COLLECTION_ARN"
+      value = aws_opensearchserverless_collection.kb_vector.arn
+    },
+    {
+      name  = "BEDROCK_KB_VECTOR_INDEX_NAME"
+      value = var.bedrock_kb_vector_index_name
     }
   ]
 
@@ -957,24 +1178,24 @@ resource "aws_ecs_task_definition" "api" {
       environment = local.container_env
       secrets = [
         {
-          name      = "OPENAI_API_KEY"
-          valueFrom = "${aws_secretsmanager_secret.openai.arn}:apiKey::"
+          name      = "PGHOST"
+          valueFrom = "${aws_secretsmanager_secret.aurora.arn}:host::"
         },
         {
-          name      = "OPENAI_ASSISTANT_ID"
-          valueFrom = "${aws_secretsmanager_secret.openai.arn}:assistantId::"
+          name      = "PGPORT"
+          valueFrom = "${aws_secretsmanager_secret.aurora.arn}:port::"
         },
         {
-          name      = "OPENAI_VECTOR_STORE_ID"
-          valueFrom = "${aws_secretsmanager_secret.openai.arn}:vectorStoreId::"
+          name      = "PGUSER"
+          valueFrom = "${aws_secretsmanager_secret.aurora.arn}:username::"
         },
         {
-          name      = "DEFAULT_BRAND_ASSISTANT_ID"
-          valueFrom = "${aws_secretsmanager_secret.openai.arn}:assistantId::"
+          name      = "PGPASSWORD"
+          valueFrom = "${aws_secretsmanager_secret.aurora.arn}:password::"
         },
         {
-          name      = "DEFAULT_BRAND_VECTOR_STORE_ID"
-          valueFrom = "${aws_secretsmanager_secret.openai.arn}:vectorStoreId::"
+          name      = "PGDATABASE"
+          valueFrom = "${aws_secretsmanager_secret.aurora.arn}:dbname::"
         },
         {
           name      = "BRAND_CATALOG"
@@ -1314,14 +1535,24 @@ output "aurora_secret_arn" {
   description = "ARN del secreto con credenciales de Aurora"
 }
 
-output "openai_secret_arn" {
-  value       = aws_secretsmanager_secret.openai.arn
-  description = "ARN del secreto con credenciales OpenAI"
-}
-
 output "uploads_bucket" {
   value       = aws_s3_bucket.uploads.bucket
   description = "Bucket para adjuntos temporales"
+}
+
+output "kb_bucket" {
+  value       = aws_s3_bucket.kb.bucket
+  description = "Bucket para documentos de Knowledge Base"
+}
+
+output "kb_collection_arn" {
+  value       = aws_opensearchserverless_collection.kb_vector.arn
+  description = "ARN de la colección vectorial OpenSearch Serverless"
+}
+
+output "bedrock_kb_role_arn" {
+  value       = aws_iam_role.bedrock_kb.arn
+  description = "Role ARN usado por Bedrock Knowledge Bases"
 }
 
 output "measurement_rule_arn" {

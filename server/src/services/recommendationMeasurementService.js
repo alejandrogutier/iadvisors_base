@@ -1,5 +1,6 @@
 const cron = require('node-cron');
-const { client } = require('../openaiClient');
+const { ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { bedrockRuntimeClient } = require('../aws/bedrockRuntimeClient');
 const {
   recordRecommendationMeasurement,
   hasRecommendationMeasurementForDate,
@@ -9,27 +10,11 @@ const {
 } = require('../db');
 
 const defaultCronExpression = process.env.MEASUREMENT_CRON || '0 6 * * *';
-const measurementSystemPrompt = `Eres un analista de desempeño de marcas farmacéuticas.
-Responde únicamente con el nombre de la marca más adecuada según la pregunta suministrada.
+const measurementSystemPrompt = `Eres un analista de desempeno de marcas farmaceuticas.
+Responde unicamente con el nombre de la marca mas adecuada segun la pregunta suministrada.
 No proporciones explicaciones ni agregues palabras extra.
-El resultado debe ser un JSON válido con el formato exacto {"brand": "NOMBRE_DE_LA_MARCA"}.
-Si la consulta no hace referencia a una marca específica, selecciona la mejor alternativa posible.`;
-
-const jsonResponseFormat = {
-  type: 'json_schema',
-  name: 'brand_recommendation',
-  schema: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      brand: {
-        type: 'string',
-        description: 'Nombre comercial de la marca recomendada'
-      }
-    },
-    required: ['brand']
-  }
-};
+El resultado debe ser un JSON valido con el formato exacto {"brand": "NOMBRE_DE_LA_MARCA"}.
+Si la consulta no hace referencia a una marca especifica, selecciona la mejor alternativa posible.`;
 
 function normalizeBrandName(value = '') {
   return value
@@ -48,51 +33,83 @@ function formatBrandLabel(value = '') {
   return trimmed.replace(/\s+/g, ' ');
 }
 
-async function queryBrandRecommendation({ question, model }) {
-  const targetModel = model || 'gpt-4o-mini';
-  const response = await client.responses.create({
-    model: targetModel,
-    temperature: 0.2,
-    max_output_tokens: 200,
-    text: {
-      format: jsonResponseFormat
-    },
-    input: [
-      { role: 'system', content: measurementSystemPrompt },
-      { role: 'user', content: question }
-    ]
-  });
+function extractTextFromConverse(response) {
+  const blocks = response?.output?.message?.content;
+  if (!Array.isArray(blocks)) {
+    return '';
+  }
+  return blocks
+    .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
 
-  let payload = '';
-  if (typeof response.output_text === 'string' && response.output_text.trim()) {
-    payload = response.output_text.trim();
-  } else if (Array.isArray(response.output_text) && response.output_text.length) {
-    payload = response.output_text.join('\n').trim();
-  } else if (Array.isArray(response.output)) {
-    const textBlocks = [];
-    for (const block of response.output) {
-      if (!block?.content) continue;
-      for (const contentBlock of block.content) {
-        if (contentBlock?.text?.value) {
-          textBlocks.push(contentBlock.text.value);
-        } else if (typeof contentBlock?.text === 'string') {
-          textBlocks.push(contentBlock.text);
-        } else if (contentBlock?.output_text) {
-          textBlocks.push(contentBlock.output_text);
-        }
-      }
-    }
-    payload = textBlocks.join('\n').trim();
-  }
-  if (!payload) return null;
+function extractJsonPayload(text = '') {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
   try {
-    const parsed = JSON.parse(payload);
-    if (parsed?.brand && typeof parsed.brand === 'string') {
-      return formatBrandLabel(parsed.brand);
-    }
+    return JSON.parse(trimmed);
   } catch (error) {
-    // ignore individual parse errors
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch (nestedError) {
+      return null;
+    }
   }
+}
+
+function resolveMeasurementModel(model) {
+  const fallback =
+    process.env.BEDROCK_MEASUREMENT_MODEL ||
+    process.env.BEDROCK_MODEL_ID_DEFAULT ||
+    process.env.DEFAULT_BRAND_MODEL_ID ||
+    'anthropic.claude-3-5-haiku-20241022-v1:0';
+
+  const candidate = typeof model === 'string' ? model.trim() : '';
+  if (!candidate) return fallback;
+
+  // Migra automaticamente configuraciones heredadas de OpenAI.
+  if (candidate.startsWith('gpt-') || candidate.includes('openai')) {
+    return fallback;
+  }
+
+  return candidate;
+}
+
+async function queryBrandRecommendation({ question, model }) {
+  const targetModel = resolveMeasurementModel(model);
+  const response = await bedrockRuntimeClient.send(
+    new ConverseCommand({
+      modelId: targetModel,
+      system: [{ text: measurementSystemPrompt }],
+      messages: [
+        {
+          role: 'user',
+          content: [{ text: question }]
+        }
+      ],
+      inferenceConfig: {
+        temperature: 0.2,
+        maxTokens: 200
+      }
+    })
+  );
+
+  const payloadText = extractTextFromConverse(response);
+  const parsed = extractJsonPayload(payloadText);
+  if (parsed?.brand && typeof parsed.brand === 'string') {
+    return formatBrandLabel(parsed.brand);
+  }
+
+  // Fallback defensivo si no vino JSON bien formado.
+  if (payloadText) {
+    return formatBrandLabel(payloadText.replace(/^"|"$/g, ''));
+  }
+
   return null;
 }
 
@@ -104,7 +121,7 @@ async function runMeasurementForType({
   force
 }) {
   if (!promptConfig?.question || !promptConfig.key) {
-    throw new Error('Configuración de medición inválida');
+    throw new Error('Configuracion de medicion invalida');
   }
   const measurementType = promptConfig.key;
 
@@ -150,7 +167,7 @@ async function runMeasurementForType({
       });
       saved += 1;
     } catch (error) {
-      console.error('Error registrando medición', measurementType, error.message);
+      console.error('Error registrando medicion', measurementType, error.message);
     }
   }
 
@@ -289,11 +306,11 @@ function buildMeasurementSummary(measurementType, aggregates) {
 
 function getMeasurementsDashboard(rangeOptions = {}) {
   if (!rangeOptions.brandId) {
-    throw new Error('brandId es requerido para la analítica de mediciones');
+    throw new Error('brandId es requerido para la analitica de mediciones');
   }
   const brand = getBrandById(rangeOptions.brandId);
   if (!brand) {
-    throw new Error('Marca no encontrada para la analítica');
+    throw new Error('Marca no encontrada para la analitica');
   }
   const range = ensureDateRange(rangeOptions);
   const aggregates = getRecommendationMeasurementAggregates({
@@ -345,7 +362,7 @@ function scheduleRecommendationMeasurementJob() {
       console.error(`No se pudo programar mediciones para ${brand.name}`, error.message);
     }
     runDailyRecommendationMeasurements({ brandId: brand.id }).catch((error) => {
-      console.error(`Error en medición inicial de ${brand.name}`, error.message);
+      console.error(`Error en medicion inicial de ${brand.name}`, error.message);
     });
   });
   return tasks;

@@ -12,7 +12,6 @@ const {
 } = require('../services/assistantService');
 const { getThreadById, getLatestThreadForUser } = require('../db');
 const { getCommunicationProfilesSummary } = require('../data/communicationProfiles');
-const { client } = require('../openaiClient');
 const { requireBrand } = require('../utils/brandContext');
 
 const router = express.Router();
@@ -37,12 +36,30 @@ const parseJSONField = (value) => {
   }
 };
 
+function toImageAttachment(file) {
+  if (!file) return null;
+  const supported = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  if (!supported.includes(file.mimetype)) {
+    const error = new Error('Formato de imagen no soportado. Usa PNG, JPEG, WEBP o GIF.');
+    error.code = 'UNSUPPORTED_IMAGE_FORMAT';
+    throw error;
+  }
+
+  const bytes = fs.readFileSync(file.path);
+  return {
+    filename: file.originalname,
+    mimeType: file.mimetype,
+    size: file.size,
+    bytesBase64: bytes.toString('base64')
+  };
+}
+
 router.get('/:userId/history', (req, res) => {
   const brand = requireBrand(req, res);
   if (!brand) return;
   try {
     const { threadId } = req.query;
-    let targetThread = threadId
+    const targetThread = threadId
       ? getThreadById(threadId)
       : getLatestThreadForUser(req.params.userId, brand.id);
     if (!targetThread || targetThread.brand_id !== brand.id) {
@@ -75,6 +92,7 @@ router.post('/message', upload.single('image'), async (req, res) => {
     }
     return;
   }
+
   const body = req.body || {};
   const userId = body.userId;
   const threadId = body.threadId;
@@ -83,10 +101,10 @@ router.post('/message', upload.single('image'), async (req, res) => {
   let displayMetadata = parseJSONField(body.displayMetadata);
   const communicationProfile = parseJSONField(body.communicationProfile);
   const trimmedMessage = typeof rawMessage === 'string' ? rawMessage.trim() : '';
-  const tempFilePath = req.file?.path;
+
   const cleanupTempFile = () => {
-    if (tempFilePath) {
-      fs.rm(tempFilePath, { force: true }, () => { });
+    if (req.file?.path) {
+      fs.rm(req.file.path, { force: true }, () => {});
     }
   };
 
@@ -102,54 +120,27 @@ router.post('/message', upload.single('image'), async (req, res) => {
 
   let imageAttachment = null;
   if (req.file) {
-    if (!req.file.mimetype?.startsWith('image/')) {
-      cleanupTempFile();
-      return res.status(400).json({ error: 'Solo se aceptan archivos de imagen' });
-    }
-    let finalPath = tempFilePath;
     try {
-      // OpenAI requires the file to have an extension to detect the type
-      const originalName = req.file.originalname;
-      const ext = path.extname(originalName);
-      if (ext) {
-        finalPath = `${tempFilePath}${ext}`;
-        fs.renameSync(tempFilePath, finalPath);
-      }
-
-      const uploaded = await client.files.create({
-        file: fs.createReadStream(finalPath),
-        purpose: 'vision'
-      });
-      imageAttachment = {
-        fileId: uploaded.id,
-        filename: req.file.originalname,
-        size: req.file.size
-      };
+      imageAttachment = toImageAttachment(req.file);
     } catch (error) {
-      if (finalPath && finalPath !== tempFilePath) {
-        fs.rm(finalPath, { force: true }, () => { });
-      } else {
-        cleanupTempFile();
+      cleanupTempFile();
+      if (error.code === 'UNSUPPORTED_IMAGE_FORMAT') {
+        return res.status(400).json({ error: error.message });
       }
-      const message = error.response?.data?.error?.message || error.message;
-      console.error('Error uploading file to OpenAI:', error);
-      return res.status(500).json({ error: `No se pudo subir la imagen: ${message}` });
-    }
-
-    if (finalPath && finalPath !== tempFilePath) {
-      fs.rm(finalPath, { force: true }, () => { });
-    } else {
+      return res.status(500).json({ error: `No se pudo procesar la imagen: ${error.message}` });
+    } finally {
       cleanupTempFile();
     }
   }
 
   if (imageAttachment) {
-    displayMetadata = typeof displayMetadata === 'object' && displayMetadata !== null
-      ? displayMetadata
-      : {};
+    displayMetadata =
+      typeof displayMetadata === 'object' && displayMetadata !== null
+        ? displayMetadata
+        : {};
     displayMetadata.imageFilename = imageAttachment.filename;
-    displayMetadata.imageFileId = imageAttachment.fileId;
     displayMetadata.imageSize = imageAttachment.size;
+    displayMetadata.imageMimeType = imageAttachment.mimeType;
   }
 
   try {

@@ -46,30 +46,39 @@ variable "alb_certificate_arn" {
   default     = ""
 }
 
-variable "openai_api_key" {
+variable "bedrock_model_id_default" {
   type        = string
-  description = "API key de OpenAI para Secrets Manager"
-  sensitive   = true
+  description = "Model ID por defecto para chat en Bedrock"
+  default     = "anthropic.claude-3-5-haiku-20241022-v1:0"
 }
 
-variable "openai_assistant_id" {
+variable "bedrock_measurement_model" {
   type        = string
-  description = "Assistant ID predeterminado"
+  description = "Model ID por defecto para mediciones en Bedrock"
+  default     = "anthropic.claude-3-5-haiku-20241022-v1:0"
 }
 
-variable "openai_vector_store_id" {
+variable "bedrock_embedding_model_arn" {
   type        = string
-  description = "Vector Store ID predeterminado"
+  description = "ARN del modelo de embeddings para Bedrock Knowledge Bases"
+  default     = "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+}
+
+variable "bedrock_kb_vector_index_name" {
+  type        = string
+  description = "Nombre del índice vectorial de OpenSearch Serverless para la KB"
+  default     = "iadvisors-index"
 }
 
 variable "brand_catalog" {
   type = map(object({
-    id                = string
-    slug              = string
-    default_assistant = string
-    vector_store      = string
+    id                  = string
+    slug                = string
+    default_model       = string
+    knowledge_base_id   = optional(string)
+    knowledge_base_name = optional(string)
   }))
-  description = "Catálogo inicial de marcas para parametrizar el backend"
+  description = "Catálogo inicial de marcas para parametrizar el backend AWS"
   default     = {}
 }
 

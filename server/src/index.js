@@ -13,17 +13,47 @@ const followupRoutes = require('./routes/followups');
 const publicDashboardRoutes = require('./routes/publicDashboard');
 const brandRoutes = require('./routes/brands');
 const { scheduleRecommendationMeasurementJob } = require('./services/recommendationMeasurementService');
+const { isAuroraConfigured } = require('./aws/auroraClient');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+  if (process.env.WRITE_FREEZE !== 'true') {
+    return next();
+  }
+
+  const isWriteMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+  if (!isWriteMethod) {
+    return next();
+  }
+
+  if (req.path === '/health' || req.path === '/api/health') {
+    return next();
+  }
+
+  return res.status(503).json({
+    error: 'WRITE_FREEZE activo. Escrituras temporalmente bloqueadas.'
+  });
+});
+
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'ok',
+    aiProvider: process.env.AI_PROVIDER || 'bedrock',
+    writeFreeze: process.env.WRITE_FREEZE === 'true',
+    auroraConfigured: isAuroraConfigured()
+  });
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'ok',
+    aiProvider: process.env.AI_PROVIDER || 'bedrock',
+    writeFreeze: process.env.WRITE_FREEZE === 'true',
+    auroraConfigured: isAuroraConfigured()
+  });
 });
 
 app.use('/api/users', userRoutes);

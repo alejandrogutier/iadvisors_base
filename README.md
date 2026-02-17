@@ -1,6 +1,6 @@
 # IAdvisors Bayer
 
-Aplicación full-stack que permite a los equipos de Bayer/Merkle evaluar y controlar conversaciones generadas con OpenAI, gestionar múltiples marcas y monitorear indicadores de recomendación. El proyecto combina un frontend en React + Ant Design con un backend en Node.js + Express, almacenamiento local SQLite y llamadas a la API de OpenAI para asistentes, vector stores y mediciones automatizadas.
+Aplicación full-stack que permite a los equipos de Bayer/Merkle evaluar y controlar conversaciones de marca con una arquitectura 100% AWS, gestionar múltiples marcas y monitorear indicadores de recomendación. El proyecto combina un frontend en React + Ant Design con un backend en Node.js + Express, persistencia operativa local SQLite para desarrollo y servicios AWS (Bedrock, Cognito, S3 Knowledge Base y Aurora) para runtime en cloud.
 
 ## Tabla de contenidos
 - [Resumen rápido](#resumen-rápido)
@@ -16,11 +16,11 @@ Aplicación full-stack que permite a los equipos de Bayer/Merkle evaluar y contr
 - [Recursos adicionales](#recursos-adicionales)
 
 ## Resumen rápido
-- **Casos principales**: login de usuarios con AWS Cognito, chat con hilos multi-marca, subida de archivos al vector store, panel de reportes, seguimiento de acciones (follow-ups), dashboard público y módulo administrativo para usuarios, marcas y asistente.
-- **Stack**: React 19 + Vite + Ant Design en el frontend; Express 5 + Better SQLite 3 + OpenAI SDK en el backend.
+- **Casos principales**: login de usuarios con AWS Cognito, chat multi-marca sobre Bedrock+Knowledge Base, subida de archivos a S3 con ingesta KB, panel de reportes, seguimiento de acciones (follow-ups), dashboard público y módulo administrativo para usuarios/marcas/configuración del asistente.
+- **Stack**: React 19 + Vite + Ant Design en el frontend; Express 5 + Better SQLite 3 + AWS SDK (Bedrock, Bedrock Agent Runtime, Cognito, S3) en el backend.
 - **Persistencia local**: base SQLite (`iadvisors.db`) con tablas para usuarios, marcas, hilos, mensajes, reportes, follow-ups y mediciones.
 - **Multimarca**: todas las operaciones autenticadas se ejecutan en el contexto de una marca seleccionada y propagada mediante el header `x-brand-id` definido por el `BrandContext` del frontend.
-- **Integraciones externas**: API de OpenAI para asistentes, vector stores, files y responses; credenciales de AWS pre-configuradas en `.env` para los despliegues gestionados por el equipo de infraestructura.
+- **Integraciones externas**: AWS Bedrock para chat y mediciones, Bedrock Knowledge Bases para RAG por marca, AWS S3 para documentos y AWS Cognito para identidad.
 - **Seguridad**: autenticación centralizada en AWS Cognito, sesiones persistidas en `localStorage`, soporte para roles (`user`, `analyst`, `admin`) y filtro de reportes/seguimientos por usuario.
 
 ## Arquitectura de la solución
@@ -28,27 +28,27 @@ Aplicación full-stack que permite a los equipos de Bayer/Merkle evaluar y contr
 ### Flujo general
 1. El usuario inicia sesión vía `/api/users/login`; el backend valida credenciales en Cognito y el frontend guarda la sesión en `localStorage`.
 2. Tras autenticarse, el `BrandContext` selecciona una marca asignada y envía el ID en `x-brand-id` en cada llamada.
-3. El chat crea/recupera hilos en SQLite y sincroniza mensajes con la API de OpenAI (assistants + vector store).
-4. Las cargas de archivos pasan por `multer`, se suben al vector store de la marca y quedan disponibles para futuras respuestas.
+3. El chat crea/recupera hilos en SQLite y responde con Bedrock Converse, enriqueciendo el contexto con recuperación desde Knowledge Base por marca.
+4. Las cargas de archivos pasan por `multer`, se almacenan en S3 (`KB_BUCKET`) y disparan jobs de ingesta de Bedrock Knowledge Base.
 5. Los reportes, follow-ups y paneles administrativos se alimentan de las tablas locales.
 6. Un job de `node-cron` ejecuta mediciones periódicas para cada marca y registra resultados agregados.
 
 ### Componentes
-- **Frontend (`client/`)**: React 19 + Vite 7 con contexts para autenticación, marca y tema; UI basada en Ant Design; rutas protegidas (`ProtectedRoute`, `AdminRoute`) y páginas específicas para chat, vector store, reportes, dashboard, seguimiento y administración.
-- **Backend (`server/`)**: Express 5 con routers modulares para usuarios, chat, archivos, reportes, admin, mediciones, follow-ups, dashboard público y marcas. Usa `multer` para uploads, `node-cron` para jobs y `openai` SDK para hilos, archivos y mediciones.
+- **Frontend (`client/`)**: React 19 + Vite 7 con contexts para autenticación, marca y tema; UI basada en Ant Design; rutas protegidas (`ProtectedRoute`, `AdminRoute`) y páginas específicas para chat, KB, reportes, dashboard, seguimiento y administración.
+- **Backend (`server/`)**: Express 5 con routers modulares para usuarios, chat, archivos, reportes, admin, mediciones, follow-ups, dashboard público y marcas. Usa `multer` para uploads, `node-cron` para jobs y AWS SDK para Bedrock/Cognito/S3.
 - **Base de datos**: `better-sqlite3` con migraciones automáticas al inicio (`server/src/db.js`). Los IDs se generan con `uuid.v4`.
 - **Servicios externos**:
-- **OpenAI**: `client.beta.threads.*`, `client.vectorStores.*`, `client.responses.create` y `client.models.list`.
+- **AWS Bedrock**: `Converse`, `Retrieve` y operaciones de Knowledge Base por marca.
 - **AWS Cognito**: autenticación con `USER_PASSWORD_AUTH` y mapeo de grupos (`admin`, `analyst`) a roles locales.
 - **AWS IAM**: las credenciales se cargan vía `.env` para despliegues y operación de AWS CLI.
-  - **Archivos locales**: cargas temporales en `/tmp` para imágenes del chat y documentos del vector store.
+  - **Archivos locales**: cargas temporales en `/tmp` para imágenes del chat y documentos previos a carga en S3.
 
 ## Arquitectura en AWS (pre-productivo)
 - **Frontend**: el build de Vite se sirve desde un bucket S3 privado y se distribuye mediante CloudFront (certificado por defecto; ACM aplica si se configura un dominio propio).
 - **Backend**: contenedor de Node.js/Express ejecutado en ECS Fargate detrás de un Application Load Balancer público (HTTP; CloudFront sirve HTTPS al cliente). Health checks en `/health`.
-- **Datos**: Aurora PostgreSQL Serverless v2 (Multi-AZ) + RDS Proxy están aprovisionados para reemplazar a SQLite, pero la aplicación debe migrarse/activarse explícitamente para usar Postgres en runtime. AWS Backup gestiona snapshots de Aurora.
+- **Datos**: Aurora PostgreSQL Serverless v2 (Multi-AZ) + RDS Proxy como persistencia cloud; SQLite se mantiene para flujo local/desarrollo y contingencia de laboratorio.
 - **Soporte**: Secrets Manager/Parameter Store reemplazan las `.env` en runtime, CloudWatch recopila logs y alarmas, y EventBridge/ECS Scheduled Tasks ejecutan las mediciones automáticas.
-- **Seguridad**: VPC con subredes públicas/privadas, NAT Gateway para salidas hacia OpenAI, WAF/Shield opcionales y roles IAM por servicio.
+- **Seguridad**: VPC con subredes públicas/privadas, WAF/Shield opcionales y roles IAM por servicio con permisos mínimos para Bedrock/S3/Cognito.
 
 El diseño completo con diagramas lógicos, flujo de datos y recomendaciones de costos se documenta en `ARCHITECTURE.md`. La guía operativa del entorno AWS pre-productivo (inventario de recursos, comandos y troubleshooting) está en `AWS.md`.
 
@@ -66,7 +66,7 @@ Consulta la sección “Checklist de alistamiento para producción” en `ARCHIT
 | Ruta | Descripción |
 | --- | --- |
 | `client/` | Frontend React + Vite (contextos globales, páginas y componentes Ant Design). |
-| `server/` | Backend Express, base SQLite, servicios de OpenAI y procesos cron. |
+| `server/` | Backend Express, base SQLite de soporte local, integración AWS (Bedrock/S3/Cognito) y procesos cron. |
 | `server/src/routes/` | Routers agrupados por dominio (usuarios, chat, archivos, admin, etc.). |
 | `server/src/services/` | Lógica de conversación y mediciones (`assistantService`, `recommendationMeasurementService`). |
 | `server/src/data/` | Datos estáticos como los perfiles/arquetipos de comunicación para el asistente. |
@@ -79,13 +79,19 @@ Consulta la sección “Checklist de alistamiento para producción” en `ARCHIT
 
 | Variable | Descripción | Obligatoria | Ejemplo / Valor por defecto |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | API key con permisos para assistants, vector stores y responses. | Sí | `sk-...` |
-| `OPENAI_ASSISTANT_ID` | Asistente principal usado cuando no se define uno por marca. | Sí | `asst_xxxxxxxxxxxxxxxxxxxxx` |
-| `OPENAI_VECTOR_STORE_ID` | Vector store global usado como fallback. | Sí | `vs_xxxxxxxxxxxxxxxxxxxxxxxx` |
-| `OPENAI_MEASUREMENT_MODEL` | Modelo default para mediciones si la marca no especifica uno. | No | `gpt-4o-mini` |
+| `AI_PROVIDER` | Proveedor de IA en runtime. | Sí | `bedrock` |
+| `RAG_ENABLED` | Activa recuperación desde Knowledge Base. | No | `true` |
+| `BEDROCK_REGION` | Región de Bedrock Runtime/Agent. | Sí | `us-east-1` |
+| `BEDROCK_MODEL_ID_DEFAULT` | Model ID por defecto para chat. | Sí | `anthropic.claude-3-5-haiku-20241022-v1:0` |
+| `BEDROCK_MEASUREMENT_MODEL` | Model ID por defecto para mediciones. | No | `anthropic.claude-3-5-haiku-20241022-v1:0` |
+| `BEDROCK_EMBEDDING_MODEL_ARN` | ARN del modelo de embeddings para KB. | No | `arn:aws:bedrock:...:foundation-model/amazon.titan-embed-text-v2:0` |
+| `BEDROCK_KB_ROLE_ARN` | Role ARN usado para crear/operar Knowledge Bases. | Sí (cloud) | `arn:aws:iam::...:role/...` |
+| `BEDROCK_KB_COLLECTION_ARN` | Colección OpenSearch Serverless vectorial para KB. | Sí (cloud) | `arn:aws:aoss:...:collection/...` |
+| `BEDROCK_KB_VECTOR_INDEX_NAME` | Índice vectorial de la colección OSS. | No | `iadvisors-index` |
+| `KB_BUCKET` | Bucket S3 de documentos para Knowledge Base. | Sí (cloud) | `iadvisors-bayer-preprod-kb...` |
 | `DEFAULT_BRAND_ID` / `DEFAULT_BRAND_NAME` / `DEFAULT_BRAND_SLUG` | Configuración inicial de la primera marca creada automáticamente. | Sí | `gynocanesten`, `Gynocanestén`, `gynocanesten` |
-| `DEFAULT_BRAND_ASSISTANT_ID` / `DEFAULT_BRAND_VECTOR_STORE_ID` | Identificadores del asistente y vector store asociados a la marca por defecto. | Sí | `asst_...`, `vs_...` |
-| `DEFAULT_BRAND_MEASUREMENT_MODEL` / `DEFAULT_BRAND_MEASUREMENT_SAMPLE_SIZE` / `DEFAULT_BRAND_MEASUREMENT_CRON` | Configuran las mediciones por marca (modelo, muestras diarias y cron). | No | Modelo `gpt-4o-mini`, muestras `100`, cron `0 6 * * *` |
+| `DEFAULT_BRAND_MODEL_ID` / `DEFAULT_BRAND_KB_ID` | Identificadores por defecto de modelo y knowledge base de marca. | Sí/No | `anthropic...`, `kb-...` |
+| `DEFAULT_BRAND_MEASUREMENT_MODEL` / `DEFAULT_BRAND_MEASUREMENT_SAMPLE_SIZE` / `DEFAULT_BRAND_MEASUREMENT_CRON` | Configuran las mediciones por marca (modelo, muestras diarias y cron). | No | Modelo Bedrock, muestras `100`, cron `0 6 * * *` |
 | `MEASUREMENT_SAMPLE_SIZE` / `MEASUREMENT_CRON` | Valores globales usados como fallback para todas las marcas. | No | `100`, `0 6 * * *` |
 | `PORT` | Puerto HTTP del backend. | No | `5001` |
 | `DATABASE_PATH` | Ruta para el archivo SQLite. | No | `./iadvisors.db` |
@@ -99,6 +105,7 @@ Consulta la sección “Checklist de alistamiento para producción” en `ARCHIT
 | `COGNITO_CLIENT_ID` | App Client ID de Cognito para flujo `USER_PASSWORD_AUTH`. | Sí | `xxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | `COGNITO_REGION` | Región del User Pool de Cognito. | No | `us-east-1` |
 | `DISABLE_MEASUREMENT_JOB` | Ajusta a `true` para omitir el cron programado en entornos locales. | No | `false` |
+| `WRITE_FREEZE` | Bloquea operaciones de escritura (`POST/PUT/PATCH/DELETE`) durante ventanas de corte. | No | `false` |
 
 > Mantén las credenciales reales únicamente en `.env` locales o inyectadas en el entorno de ejecución. Nunca se versionan archivos `.env` reales.
 
@@ -115,7 +122,7 @@ La base `iadvisors.db` vive en `server/` (o en `/app/data` cuando se usa Docker)
 
 | Tabla | Uso |
 | --- | --- |
-| `brands` | Configuración por marca: asistente, vector store, prompts y parámetros de medición. |
+| `brands` | Configuración por marca: `modelId`, `knowledgeBaseId`, estado KB, guardrail, prompts y parámetros de medición. |
 | `users` | Nombre, correo, `password_hash` local de compatibilidad y rol sincronizado con Cognito. |
 | `user_brands` | Relación muchos-a-muchos usuario ↔ marca con bandera de marca predeterminada. |
 | `threads` | Hilos de conversación (ID local + `openai_thread_id`, título, `brand_id`). |
@@ -123,6 +130,7 @@ La base `iadvisors.db` vive en `server/` (o en `/app/data` cuando se usa Docker)
 | `reports` | Incidentes levantados sobre mensajes, con estado/resolución y referencias a usuarios. |
 | `followups` | Planes de acción luego de una conversación (plataforma, fechas, estado). |
 | `recommendation_measurements` | Resultados del job automático que evalúa qué marca se recomienda en cada prompt. |
+| `brand_documents` | Inventario documental por marca en S3 + estado de ingesta Knowledge Base. |
 
 Indices adicionales (`idx_user_brands_*`, `idx_messages_*`, etc.) optimizan filtros por marca/usuario/reportes. Cualquier cambio en el modelo de datos debe reflejarse en `server/src/db.js` para mantener las migraciones automáticas.
 
@@ -132,13 +140,13 @@ Indices adicionales (`idx_user_brands_*`, `idx_messages_*`, etc.) optimizan filt
 
 - **`/api/users`**: login (`POST /login`) validado en Cognito, cambio de contraseña (`POST /change-password`) en Cognito, actualización de perfil local (`PUT /:userId`, sin cambio de correo) y consulta (`GET /:userId`). `POST /register` y `POST /set-password` quedan deshabilitados.
 - **`/api/chat`**: historial (`GET /:userId/history`), lista/creación/renombrado de hilos, envío de mensajes (`POST /message` con texto + imagen ≤ 6 MB), listado de mensajes por hilo y consulta de perfiles de comunicación (`GET /communication-profiles`).
-- **`/api/files`**: lista el vector store de la marca, sube archivos (PDF, DOC, TXT, CSV) a OpenAI y permite eliminarlos.
+- **`/api/files`**: lista documentos por marca, sube archivos (PDF, DOC, TXT, CSV) a S3 y dispara ingesta a Bedrock Knowledge Base.
 - **`/api/reports`**: creación de reportes sobre respuestas, listado filtrado por rol, resolución y eliminación (con controles de permisos).
 - **`/api/measurements`**: resumen histórico (`GET /summary`) y ejecución manual del job de mediciones (`POST /run`).
 - **`/api/followups`**: CRUD de registros de seguimiento con filtros por fecha, status y dueño; administración restringida por rol.
-- **`/api/admin`**: listado de usuarios con estadísticas, creación/edición de roles y marcas asignadas, eliminación de usuarios, consulta de mensajes y ajustes del asistente de OpenAI (modelos, tools, metadata, vector store ids).
+- **`/api/admin`**: listado de usuarios con estadísticas, creación/edición de roles y marcas asignadas, eliminación de usuarios (sync Cognito), consulta de mensajes y ajustes de configuración Bedrock/KB por marca.
 - **`/api/public-dashboard`**: métricas agregadas para dashboards con rango de fechas configurable.
-- **`/api/brands`**: listado, creación y edición de marcas (ID, slug, asistente y vector store).
+- **`/api/brands`**: listado, creación y edición de marcas (ID, slug, `modelId`, `knowledgeBaseId`, aliases de compatibilidad `assistantId`/`vectorStoreId`).
 
 Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas rutas.
 
@@ -152,26 +160,26 @@ Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas ru
 - **Pantallas**:
   - `RegisterPage` (ruta `/login`): pantalla de inicio de sesión contra Cognito.
   - `ChatPage`: panel de conversaciones, creación/renombrado de hilos, `ChatPanel` con Markdown rendering, selección de formatos de contenido/redes, perfiles de comunicación/arquetipos, adjuntos de imagen y envío de reportes.
-  - `VectorStorePage`: integra `FileManager` para subir/borrar archivos en el vector store de la marca.
+  - `VectorStorePage`: integra `FileManager` para subir/borrar archivos de la Knowledge Base de la marca.
   - `ReportsPage`: `ReportCenter` para ver y resolver reportes con filtros y permisos sobre cada registro.
   - `FollowUpsPage`: `FollowUpsPanel` con filtros (estado, fecha, dueño), CRUD en modal y control granular por rol.
   - `PublicDashboardPage`: widgets que consumen `/api/public-dashboard` para mostrar métricas por fecha.
   - `RecommendationAnalyticsPage`: panel administrativo para inspeccionar las mediciones agregadas (`/api/measurements/summary`).
-  - `AdminUsersPage`, `AdminAssistantPage`, `AdminBrandsPage`: administración de usuarios, afinación del asistente (modelos, tools, metadata, vector store IDs) y gestión de marcas.
+  - `AdminUsersPage`, `AdminAssistantPage`, `AdminBrandsPage`: administración de usuarios (Cognito), configuración Bedrock (modelo/instrucciones/guardrails/KB) y gestión de marcas.
 - **Integración con la API**: `client/src/api.js` crea una instancia Axios que apunta a `VITE_API_BASE`. Vite proxya `/api` al backend durante `npm run dev` usando `VITE_API_PROXY`.
 
 ## Métricas automatizadas
 
 `server/src/services/recommendationMeasurementService.js` ejecuta un job por marca usando `node-cron`:
 - Cada marca define prompts (preguntas) y parámetros (`measurement.model`, `sampleSize`, `cron`).
-- El job crea requests `client.responses.create` con un esquema JSON obligatorio y normaliza el nombre de la marca devuelta.
+- El job usa Bedrock `Converse` con salida JSON controlada y normaliza el nombre de la marca devuelta.
 - Los resultados se guardan en `recommendation_measurements` y luego se agregan para dashboards (`getMeasurementsDashboard`).
 - Usa `DISABLE_MEASUREMENT_JOB=true` para evitar la ejecución automática en ambientes temporales.
 - `POST /api/measurements/run` permite ejecutar el job manualmente para un día/marca específicos.
 
 ## Puesta en marcha local
 
-1. **Pre-requisitos**: Node.js ≥ 18, npm 10+, Docker opcional (solo si usarás contenedores), y una API key válida de OpenAI.
+1. **Pre-requisitos**: Node.js ≥ 18, npm 10+, Docker opcional (solo si usarás contenedores) y credenciales AWS con permisos Bedrock/Cognito/S3.
 2. **Configura variables**: copia `server/.env.example` en `server/.env` y completa todos los campos (incluyendo las credenciales de AWS provistas por el equipo de infraestructura).
 3. **Instala dependencias**:
    ```bash
@@ -223,7 +231,7 @@ Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas ru
    terraform plan -out tfplan
    terraform apply tfplan
    ```
-   Define las variables sensibles (`openai_api_key`, `openai_assistant_id`, `openai_vector_store_id`, `brand_catalog`) en un `terraform.tfvars` no versionado. Puedes ajustar la versión del engine de Aurora con `aurora_engine_version` si AWS publica releases futuros. Los outputs mostrarán el dominio de CloudFront, el DNS del ALB, los buckets y el repositorio ECR.
+   Define las variables sensibles (`bedrock_model_id_default`, `bedrock_measurement_model`, `bedrock_embedding_model_arn`, `brand_catalog`) en un `terraform.tfvars` no versionado. Puedes ajustar la versión del engine de Aurora con `aurora_engine_version` si AWS publica releases futuros. Los outputs mostrarán CloudFront, ALB, buckets, colección vectorial y repositorio ECR.
 2. **Imagen del backend**: construye el contenedor usando `server/Dockerfile` y publica la imagen con tag `latest` (y opcionalmente el SHA) en el repositorio ECR expuesto por Terraform. Para ECS Fargate usa siempre imágenes `linux/amd64`:
    ```bash
    docker buildx build --platform linux/amd64 -f server/Dockerfile server -t $ECR_REPO:latest --push
@@ -231,7 +239,7 @@ Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas ru
    ```
 3. **Migración de datos**: ejecuta `npm run migrate:sqlite-to-pg` en `server/` con las variables `PG_CONNECTION_STRING` (o `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) apuntando al endpoint del RDS Proxy. Esto copiará marcas, usuarios, hilos, mensajes, reportes, followups y mediciones desde SQLite hacia Aurora.
    > Aurora vive en subredes privadas; ejecuta el script desde una tarea ECS temporal, un bastion o cualquier host dentro de la VPC.
-4. **Secrets/variables en runtime**: el task de ECS inyecta las credenciales de OpenAI (`OPENAI_API_KEY`, `OPENAI_ASSISTANT_ID`, `OPENAI_VECTOR_STORE_ID` y defaults de marca) desde Secrets Manager, además del catálogo de marcas (`BRAND_CATALOG`) y la bandera `DISABLE_MEASUREMENT_JOB` desde Parameter Store (SSM). Para auth, también define `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` y `COGNITO_REGION`. Los `.env` no se distribuyen en contenedores.
+4. **Secrets/variables en runtime**: el task de ECS inyecta credenciales Aurora (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) desde Secrets Manager, además del catálogo de marcas (`BRAND_CATALOG`) y la bandera `DISABLE_MEASUREMENT_JOB` desde Parameter Store (SSM). Para IA usa `AI_PROVIDER=bedrock`, `BEDROCK_*` y `KB_BUCKET`. Para auth, define `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` y `COGNITO_REGION`. Los `.env` no se distribuyen en contenedores.
 5. **Job de mediciones**: EventBridge ejecuta el task de ECS con el cron definido en `measurement_schedule_expression`. Puedes pausar el job cambiando el parámetro `/iadvisors-bayer-preprod/disable_measurement_job` a `true`.
 6. **Frontend**: genera el build con la API apuntando a `/api` (CloudFront lo proxya al ALB) y sincroniza con el bucket indicado por Terraform. La distribución aplica un `viewer-request` function para reescribir rutas SPA a `/index.html` (excepto `/api/*`), evitando que los errores 4xx/5xx de la API se conviertan en HTML.
    ```bash

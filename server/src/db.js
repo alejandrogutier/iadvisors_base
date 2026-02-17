@@ -7,20 +7,22 @@ const { v4: uuid } = require('uuid');
 const configuredDefaultBrandId = process.env.DEFAULT_BRAND_ID || 'gynocanesten';
 const defaultBrandName = process.env.DEFAULT_BRAND_NAME || 'Gynocanestén';
 const defaultBrandSlugSource = process.env.DEFAULT_BRAND_SLUG || defaultBrandName;
-const defaultBrandAssistantId =
-  process.env.DEFAULT_BRAND_ASSISTANT_ID || process.env.OPENAI_ASSISTANT_ID;
-const defaultBrandVectorStoreId =
-  process.env.DEFAULT_BRAND_VECTOR_STORE_ID || process.env.OPENAI_VECTOR_STORE_ID;
-
-if (!defaultBrandAssistantId) {
-  throw new Error('DEFAULT_BRAND_ASSISTANT_ID or OPENAI_ASSISTANT_ID env variable is required');
-}
-if (!defaultBrandVectorStoreId) {
-  throw new Error('DEFAULT_BRAND_VECTOR_STORE_ID or OPENAI_VECTOR_STORE_ID env variable is required');
-}
+const defaultBrandModelId =
+  process.env.DEFAULT_BRAND_MODEL_ID ||
+  process.env.DEFAULT_BRAND_ASSISTANT_ID ||
+  process.env.BEDROCK_MODEL_ID_DEFAULT ||
+  'anthropic.claude-3-5-haiku-20241022-v1:0';
+const defaultBrandKnowledgeBaseId =
+  process.env.DEFAULT_BRAND_KB_ID ||
+  process.env.DEFAULT_BRAND_VECTOR_STORE_ID ||
+  process.env.OPENAI_VECTOR_STORE_ID ||
+  null;
 
 const defaultMeasurementModel =
-  process.env.DEFAULT_BRAND_MEASUREMENT_MODEL || process.env.OPENAI_MEASUREMENT_MODEL || 'gpt-4o-mini';
+  process.env.DEFAULT_BRAND_MEASUREMENT_MODEL ||
+  process.env.BEDROCK_MEASUREMENT_MODEL ||
+  process.env.BEDROCK_MODEL_ID_DEFAULT ||
+  defaultBrandModelId;
 const defaultMeasurementSampleSize = Math.max(
   1,
   parseInt(process.env.DEFAULT_BRAND_MEASUREMENT_SAMPLE_SIZE || process.env.MEASUREMENT_SAMPLE_SIZE || '100', 10)
@@ -76,7 +78,17 @@ db.exec(`
     slug TEXT NOT NULL UNIQUE,
     description TEXT,
     assistant_id TEXT NOT NULL,
-    vector_store_id TEXT NOT NULL,
+    vector_store_id TEXT NOT NULL DEFAULT '',
+    model_id TEXT,
+    knowledge_base_id TEXT,
+    knowledge_base_status TEXT,
+    guardrail_id TEXT,
+    kb_data_source_id TEXT,
+    kb_s3_prefix TEXT,
+    assistant_instructions TEXT,
+    assistant_temperature REAL,
+    assistant_top_p REAL,
+    assistant_max_tokens INTEGER,
     measurement_model TEXT,
     measurement_sample_size INTEGER,
     measurement_cron TEXT,
@@ -172,6 +184,25 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (brand_id) REFERENCES brands(id)
   );
+
+  CREATE TABLE IF NOT EXISTS brand_documents (
+    id TEXT PRIMARY KEY,
+    brand_id TEXT NOT NULL,
+    knowledge_base_id TEXT,
+    data_source_id TEXT,
+    s3_bucket TEXT NOT NULL,
+    s3_key TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT,
+    size_bytes INTEGER,
+    status TEXT NOT NULL DEFAULT 'uploaded',
+    ingestion_job_id TEXT,
+    last_error TEXT,
+    deleted_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (brand_id) REFERENCES brands(id)
+  );
 `);
 
 try {
@@ -248,6 +279,91 @@ try {
   // ignore
 }
 
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN model_id TEXT');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN knowledge_base_id TEXT');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec("ALTER TABLE brands ADD COLUMN knowledge_base_status TEXT DEFAULT 'NOT_CONFIGURED'");
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN guardrail_id TEXT');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN kb_data_source_id TEXT');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN kb_s3_prefix TEXT');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN assistant_instructions TEXT');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN assistant_temperature REAL');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN assistant_top_p REAL');
+} catch (error) {
+  // ignore
+}
+
+try {
+  db.exec('ALTER TABLE brands ADD COLUMN assistant_max_tokens INTEGER');
+} catch (error) {
+  // ignore
+}
+
+db.prepare(`
+  UPDATE brands
+  SET model_id = assistant_id
+  WHERE (model_id IS NULL OR model_id = '')
+    AND assistant_id IS NOT NULL
+    AND assistant_id <> ''
+`).run();
+
+db.prepare(`
+  UPDATE brands
+  SET knowledge_base_id = vector_store_id
+  WHERE (knowledge_base_id IS NULL OR knowledge_base_id = '')
+    AND vector_store_id IS NOT NULL
+    AND vector_store_id <> ''
+`).run();
+
+db.prepare(`
+  UPDATE brands
+  SET knowledge_base_status = CASE
+    WHEN knowledge_base_id IS NOT NULL AND knowledge_base_id <> '' THEN 'ACTIVE'
+    ELSE 'NOT_CONFIGURED'
+  END
+  WHERE knowledge_base_status IS NULL OR knowledge_base_status = ''
+`).run();
+
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_brands_slug ON brands (slug);
   CREATE INDEX IF NOT EXISTS idx_user_brands_user ON user_brands (user_id);
@@ -272,6 +388,10 @@ db.exec(`
     ON followups (brand_id);
   CREATE INDEX IF NOT EXISTS idx_recommendations_brand_id
     ON recommendation_measurements (brand_id);
+  CREATE INDEX IF NOT EXISTS idx_brand_documents_brand
+    ON brand_documents (brand_id);
+  CREATE INDEX IF NOT EXISTS idx_brand_documents_status
+    ON brand_documents (status);
 `);
 
 const insertBrandStmt = db.prepare(`
@@ -282,6 +402,16 @@ const insertBrandStmt = db.prepare(`
     description,
     assistant_id,
     vector_store_id,
+    model_id,
+    knowledge_base_id,
+    knowledge_base_status,
+    guardrail_id,
+    kb_data_source_id,
+    kb_s3_prefix,
+    assistant_instructions,
+    assistant_temperature,
+    assistant_top_p,
+    assistant_max_tokens,
     measurement_model,
     measurement_sample_size,
     measurement_cron,
@@ -293,6 +423,16 @@ const insertBrandStmt = db.prepare(`
     @description,
     @assistant_id,
     @vector_store_id,
+    @model_id,
+    @knowledge_base_id,
+    @knowledge_base_status,
+    @guardrail_id,
+    @kb_data_source_id,
+    @kb_s3_prefix,
+    @assistant_instructions,
+    @assistant_temperature,
+    @assistant_top_p,
+    @assistant_max_tokens,
     @measurement_model,
     @measurement_sample_size,
     @measurement_cron,
@@ -306,6 +446,16 @@ const updateBrandStmt = db.prepare(`
       description = @description,
       assistant_id = @assistant_id,
       vector_store_id = @vector_store_id,
+      model_id = @model_id,
+      knowledge_base_id = @knowledge_base_id,
+      knowledge_base_status = @knowledge_base_status,
+      guardrail_id = @guardrail_id,
+      kb_data_source_id = @kb_data_source_id,
+      kb_s3_prefix = @kb_s3_prefix,
+      assistant_instructions = @assistant_instructions,
+      assistant_temperature = @assistant_temperature,
+      assistant_top_p = @assistant_top_p,
+      assistant_max_tokens = @assistant_max_tokens,
       measurement_model = @measurement_model,
       measurement_sample_size = @measurement_sample_size,
       measurement_cron = @measurement_cron,
@@ -334,6 +484,9 @@ const updateFollowupBrandReferenceStmt = db.prepare(
 );
 const updateRecommendationBrandReferenceStmt = db.prepare(
   'UPDATE recommendation_measurements SET brand_id = @newId WHERE brand_id = @oldId'
+);
+const updateBrandDocumentBrandReferenceStmt = db.prepare(
+  'UPDATE brand_documents SET brand_id = @newId WHERE brand_id = @oldId'
 );
 
 const listUserBrandsStmt = db.prepare(`
@@ -452,6 +605,7 @@ function migrateBrandIdentifier(oldId, newId) {
     updateReportBrandReferenceStmt.run({ oldId, newId });
     updateFollowupBrandReferenceStmt.run({ oldId, newId });
     updateRecommendationBrandReferenceStmt.run({ oldId, newId });
+    updateBrandDocumentBrandReferenceStmt.run({ oldId, newId });
     updateBrandIdStmt.run({ oldId, newId });
   });
   performMigration();
@@ -486,13 +640,32 @@ function serializeMeasurementPrompts(prompts) {
 
 function formatBrandRecord(row) {
   if (!row) return null;
+  const modelId = row.model_id || row.assistant_id || defaultBrandModelId;
+  const knowledgeBaseId = row.knowledge_base_id || row.vector_store_id || null;
+  const knowledgeBaseStatus =
+    row.knowledge_base_status || (knowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED');
+
   return {
     id: row.id,
     name: row.name,
     slug: row.slug,
     description: row.description,
-    assistantId: row.assistant_id,
-    vectorStoreId: row.vector_store_id,
+    modelId,
+    knowledgeBaseId,
+    knowledgeBaseStatus,
+    guardrailId: row.guardrail_id || null,
+    kbDataSourceId: row.kb_data_source_id || null,
+    kbS3Prefix: row.kb_s3_prefix || null,
+    assistantId: modelId,
+    vectorStoreId: knowledgeBaseId,
+    assistantSettings: {
+      instructions: row.assistant_instructions || '',
+      temperature:
+        typeof row.assistant_temperature === 'number' ? row.assistant_temperature : null,
+      topP: typeof row.assistant_top_p === 'number' ? row.assistant_top_p : null,
+      maxTokens:
+        typeof row.assistant_max_tokens === 'number' ? row.assistant_max_tokens : null
+    },
     measurement: {
       model: row.measurement_model || defaultMeasurementModel,
       sampleSize: row.measurement_sample_size || defaultMeasurementSampleSize,
@@ -528,8 +701,24 @@ function ensureDefaultBrandRecord() {
       name: brand.name || defaultBrandName,
       slug: defaultBrandSlug || brand.slug || slugify(defaultBrandName),
       description: brand.description || 'Marca principal',
-      assistant_id: brand.assistant_id || defaultBrandAssistantId,
-      vector_store_id: brand.vector_store_id || defaultBrandVectorStoreId,
+      assistant_id: brand.assistant_id || brand.model_id || defaultBrandModelId,
+      vector_store_id: brand.vector_store_id || brand.knowledge_base_id || defaultBrandKnowledgeBaseId || '',
+      model_id: brand.model_id || brand.assistant_id || defaultBrandModelId,
+      knowledge_base_id: brand.knowledge_base_id || brand.vector_store_id || defaultBrandKnowledgeBaseId || null,
+      knowledge_base_status:
+        brand.knowledge_base_status ||
+        (brand.knowledge_base_id || brand.vector_store_id || defaultBrandKnowledgeBaseId
+          ? 'ACTIVE'
+          : 'NOT_CONFIGURED'),
+      guardrail_id: brand.guardrail_id || null,
+      kb_data_source_id: brand.kb_data_source_id || null,
+      kb_s3_prefix: brand.kb_s3_prefix || `kb/${resolvedDefaultBrandId}/`,
+      assistant_instructions: brand.assistant_instructions || null,
+      assistant_temperature:
+        typeof brand.assistant_temperature === 'number' ? brand.assistant_temperature : null,
+      assistant_top_p: typeof brand.assistant_top_p === 'number' ? brand.assistant_top_p : null,
+      assistant_max_tokens:
+        typeof brand.assistant_max_tokens === 'number' ? brand.assistant_max_tokens : null,
       measurement_model: brand.measurement_model || defaultMeasurementModel,
       measurement_sample_size: brand.measurement_sample_size || defaultMeasurementSampleSize,
       measurement_cron: brand.measurement_cron || defaultMeasurementCron,
@@ -544,8 +733,18 @@ function ensureDefaultBrandRecord() {
     name: defaultBrandName,
     slug: defaultBrandSlug,
     description: 'Marca principal',
-    assistant_id: defaultBrandAssistantId,
-    vector_store_id: defaultBrandVectorStoreId,
+    assistant_id: defaultBrandModelId,
+    vector_store_id: defaultBrandKnowledgeBaseId || '',
+    model_id: defaultBrandModelId,
+    knowledge_base_id: defaultBrandKnowledgeBaseId,
+    knowledge_base_status: defaultBrandKnowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED',
+    guardrail_id: null,
+    kb_data_source_id: null,
+    kb_s3_prefix: `kb/${configuredDefaultBrandId}/`,
+    assistant_instructions: null,
+    assistant_temperature: null,
+    assistant_top_p: null,
+    assistant_max_tokens: null,
     measurement_model: defaultMeasurementModel,
     measurement_sample_size: defaultMeasurementSampleSize,
     measurement_cron: defaultMeasurementCron,
@@ -634,13 +833,30 @@ function getBrandByIdOrThrow(brandId) {
 function normalizeBrandPayload(input = {}, existing = {}) {
   const targetId = input.id || existing.id || uuid();
   const name = input.name || existing.name || 'Nueva marca';
-  const assistantId = input.assistantId || existing.assistantId || existing.assistant_id;
-  const vectorStoreId = input.vectorStoreId || existing.vectorStoreId || existing.vector_store_id;
-  if (!assistantId || !vectorStoreId) {
+  const modelId =
+    input.modelId ||
+    input.assistantId ||
+    existing.model_id ||
+    existing.assistantId ||
+    existing.assistant_id ||
+    defaultBrandModelId;
+  const knowledgeBaseId =
+    input.knowledgeBaseId !== undefined
+      ? input.knowledgeBaseId
+      : input.vectorStoreId !== undefined
+        ? input.vectorStoreId
+        : existing.knowledge_base_id !== undefined
+          ? existing.knowledge_base_id
+          : existing.vectorStoreId !== undefined
+            ? existing.vectorStoreId
+            : existing.vector_store_id || null;
+
+  if (!modelId) {
     const err = new Error('BRAND_CONFIG_INCOMPLETE');
     err.code = 'BRAND_CONFIG_INCOMPLETE';
     throw err;
   }
+
   const measurement = input.measurement || existing.measurement || {};
   const finalMeasurementModel = measurement.model || existing.measurement_model || defaultMeasurementModel;
   const finalSampleSize = measurement.sampleSize || existing.measurement_sample_size || defaultMeasurementSampleSize;
@@ -648,13 +864,64 @@ function normalizeBrandPayload(input = {}, existing = {}) {
   const finalPrompts = serializeMeasurementPrompts(
     measurement.prompts || parseMeasurementPrompts(existing.measurement_prompts)
   );
+
+  const knowledgeBaseStatus =
+    input.knowledgeBaseStatus ||
+    existing.knowledge_base_status ||
+    (knowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED');
+
+  const assistantInstructions =
+    input.assistantInstructions !== undefined
+      ? input.assistantInstructions
+      : existing.assistant_instructions;
+  const assistantTemperature =
+    input.assistantTemperature !== undefined
+      ? input.assistantTemperature
+      : existing.assistant_temperature;
+  const assistantTopP =
+    input.assistantTopP !== undefined
+      ? input.assistantTopP
+      : existing.assistant_top_p;
+  const assistantMaxTokens =
+    input.assistantMaxTokens !== undefined
+      ? input.assistantMaxTokens
+      : existing.assistant_max_tokens;
+
   return {
     id: targetId,
     name,
     slug: slugify(input.slug || name || targetId),
     description: input.description === undefined ? existing.description : input.description,
-    assistant_id: assistantId,
-    vector_store_id: vectorStoreId,
+    assistant_id: modelId,
+    vector_store_id: knowledgeBaseId || '',
+    model_id: modelId,
+    knowledge_base_id: knowledgeBaseId || null,
+    knowledge_base_status: knowledgeBaseStatus,
+    guardrail_id:
+      input.guardrailId !== undefined
+        ? input.guardrailId
+        : existing.guardrail_id || null,
+    kb_data_source_id:
+      input.kbDataSourceId !== undefined
+        ? input.kbDataSourceId
+        : existing.kb_data_source_id || null,
+    kb_s3_prefix:
+      input.kbS3Prefix !== undefined
+        ? input.kbS3Prefix
+        : existing.kb_s3_prefix || `kb/${targetId}/`,
+    assistant_instructions: assistantInstructions || null,
+    assistant_temperature:
+      typeof assistantTemperature === 'number' && !Number.isNaN(assistantTemperature)
+        ? assistantTemperature
+        : null,
+    assistant_top_p:
+      typeof assistantTopP === 'number' && !Number.isNaN(assistantTopP)
+        ? assistantTopP
+        : null,
+    assistant_max_tokens:
+      typeof assistantMaxTokens === 'number' && Number.isFinite(assistantMaxTokens)
+        ? Math.max(1, Math.floor(assistantMaxTokens))
+        : null,
     measurement_model: finalMeasurementModel,
     measurement_sample_size: finalSampleSize,
     measurement_cron: finalCron,
@@ -858,6 +1125,58 @@ const listMessagesByUserStmt = db.prepare(`
   WHERE threads.user_id = ?
     AND messages.brand_id = ?
   ORDER BY datetime(messages.created_at) DESC
+`);
+const insertBrandDocumentStmt = db.prepare(`
+  INSERT INTO brand_documents (
+    id,
+    brand_id,
+    knowledge_base_id,
+    data_source_id,
+    s3_bucket,
+    s3_key,
+    filename,
+    content_type,
+    size_bytes,
+    status,
+    ingestion_job_id,
+    last_error
+  ) VALUES (
+    @id,
+    @brand_id,
+    @knowledge_base_id,
+    @data_source_id,
+    @s3_bucket,
+    @s3_key,
+    @filename,
+    @content_type,
+    @size_bytes,
+    @status,
+    @ingestion_job_id,
+    @last_error
+  )
+`);
+const listBrandDocumentsStmt = db.prepare(`
+  SELECT *
+  FROM brand_documents
+  WHERE brand_id = ?
+    AND (deleted_at IS NULL OR deleted_at = '')
+  ORDER BY datetime(created_at) DESC
+`);
+const findBrandDocumentByIdStmt = db.prepare('SELECT * FROM brand_documents WHERE id = ?');
+const updateBrandDocumentIngestionStmt = db.prepare(`
+  UPDATE brand_documents
+  SET status = @status,
+      ingestion_job_id = @ingestion_job_id,
+      last_error = @last_error,
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = @id
+`);
+const softDeleteBrandDocumentStmt = db.prepare(`
+  UPDATE brand_documents
+  SET deleted_at = CURRENT_TIMESTAMP,
+      status = 'deleted',
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
 `);
 const insertMeasurementResultStmt = db.prepare(`
   INSERT INTO recommendation_measurements (
@@ -1464,6 +1783,58 @@ function listFollowUps({ includeAll, userId, ownerId, status, startDate, endDate
   return stmt.all(params).map(formatFollowUpRecord);
 }
 
+function createBrandDocument({
+  brandId,
+  knowledgeBaseId,
+  dataSourceId,
+  s3Bucket,
+  s3Key,
+  filename,
+  contentType,
+  sizeBytes,
+  status = 'uploaded'
+}) {
+  const payload = {
+    id: uuid(),
+    brand_id: brandId,
+    knowledge_base_id: knowledgeBaseId || null,
+    data_source_id: dataSourceId || null,
+    s3_bucket: s3Bucket,
+    s3_key: s3Key,
+    filename,
+    content_type: contentType || null,
+    size_bytes: typeof sizeBytes === 'number' ? sizeBytes : null,
+    status,
+    ingestion_job_id: null,
+    last_error: null
+  };
+  insertBrandDocumentStmt.run(payload);
+  return findBrandDocumentByIdStmt.get(payload.id);
+}
+
+function listBrandDocuments(brandId) {
+  return listBrandDocumentsStmt.all(brandId);
+}
+
+function findBrandDocumentById(id) {
+  return findBrandDocumentByIdStmt.get(id);
+}
+
+function updateBrandDocumentIngestion({ id, status, ingestionJobId, lastError }) {
+  updateBrandDocumentIngestionStmt.run({
+    id,
+    status: status || 'uploaded',
+    ingestion_job_id: ingestionJobId || null,
+    last_error: lastError || null
+  });
+  return findBrandDocumentByIdStmt.get(id);
+}
+
+function softDeleteBrandDocument(id) {
+  softDeleteBrandDocumentStmt.run(id);
+  return findBrandDocumentByIdStmt.get(id);
+}
+
 function recordRecommendationMeasurement({
   measurementType,
   promptType,
@@ -1672,6 +2043,11 @@ module.exports = {
   updateFollowUpEntry,
   deleteFollowUpEntry,
   listFollowUps,
+  createBrandDocument,
+  listBrandDocuments,
+  findBrandDocumentById,
+  updateBrandDocumentIngestion,
+  softDeleteBrandDocument,
   findFollowUpById: (id) => formatFollowUpRecord(findFollowUpByIdStmt.get(id)),
   listBrands: () => listAllBrands(),
   getBrandById: (brandId) => formatBrandRecord(findBrandByIdStmt.get(brandId)),

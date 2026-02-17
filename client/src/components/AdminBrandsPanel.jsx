@@ -21,7 +21,7 @@ const AdminBrandsPanel = () => {
       if (!selectedBrandId && brandList.length) {
         setSelectedBrandId(brandList[0].id);
       }
-    } catch (error) {
+    } catch {
       antdMessage.error('No se pudieron cargar las marcas');
     } finally {
       setLoading(false);
@@ -45,8 +45,12 @@ const AdminBrandsPanel = () => {
       name: brand.name,
       slug: brand.slug,
       description: brand.description,
-      assistantId: brand.assistantId,
-      vectorStoreId: brand.vectorStoreId,
+      modelId: brand.modelId || brand.assistantId,
+      knowledgeBaseId: brand.knowledgeBaseId || brand.vectorStoreId,
+      knowledgeBaseStatus: brand.knowledgeBaseStatus,
+      guardrailId: brand.guardrailId,
+      kbDataSourceId: brand.kbDataSourceId,
+      kbS3Prefix: brand.kbS3Prefix,
       measurementModel: brand.measurement?.model,
       measurementSampleSize: brand.measurement?.sampleSize,
       measurementCron: brand.measurement?.cron,
@@ -62,8 +66,14 @@ const AdminBrandsPanel = () => {
         name: values.name,
         slug: values.slug,
         description: values.description,
-        assistantId: values.assistantId,
-        vectorStoreId: values.vectorStoreId,
+        modelId: values.modelId,
+        knowledgeBaseId: values.knowledgeBaseId || null,
+        knowledgeBaseStatus: values.knowledgeBaseStatus || null,
+        guardrailId: values.guardrailId || null,
+        kbDataSourceId: values.kbDataSourceId || null,
+        kbS3Prefix: values.kbS3Prefix || null,
+        assistantId: values.modelId,
+        vectorStoreId: values.knowledgeBaseId || null,
         measurement: {
           model: values.measurementModel,
           sampleSize: values.measurementSampleSize,
@@ -107,7 +117,7 @@ const AdminBrandsPanel = () => {
             <Title level={4} style={{ marginBottom: 0 }}>
               Configuración de marcas
             </Title>
-            <Text type="secondary">Administra las credenciales y parámetros por marca.</Text>
+            <Text type="secondary">Administra modelo Bedrock, Knowledge Base y parámetros por marca.</Text>
           </div>
           <Space>
             <Select
@@ -136,14 +146,26 @@ const AdminBrandsPanel = () => {
           <Form.Item label="Descripción" name="description">
             <Input.TextArea rows={2} placeholder="Información adicional" />
           </Form.Item>
-          <Form.Item label="Assistant ID" name="assistantId" rules={[{ required: true, message: 'Assistant ID requerido' }]}> 
-            <Input placeholder="asst_..." />
+          <Form.Item label="Model ID" name="modelId" rules={[{ required: true, message: 'Model ID requerido' }]}> 
+            <Input placeholder="anthropic.claude-3-5-haiku-20241022-v1:0" />
           </Form.Item>
-          <Form.Item label="Vector Store ID" name="vectorStoreId" rules={[{ required: true, message: 'Vector Store ID requerido' }]}> 
-            <Input placeholder="vs_..." />
+          <Form.Item label="Knowledge Base ID" name="knowledgeBaseId">
+            <Input placeholder="kb-xxxxxxxx" />
+          </Form.Item>
+          <Form.Item label="Estado Knowledge Base" name="knowledgeBaseStatus">
+            <Input placeholder="ACTIVE / CREATING / PENDING_CONFIG" />
+          </Form.Item>
+          <Form.Item label="Guardrail ID" name="guardrailId">
+            <Input placeholder="gr-xxxxxxxx" />
+          </Form.Item>
+          <Form.Item label="Data Source ID" name="kbDataSourceId">
+            <Input placeholder="ds-xxxxxxxx" />
+          </Form.Item>
+          <Form.Item label="S3 Prefix KB" name="kbS3Prefix">
+            <Input placeholder="kb/gynocanesten/" />
           </Form.Item>
           <Form.Item label="Modelo de medición" name="measurementModel">
-            <Input placeholder="gpt-4o-mini" />
+            <Input placeholder="anthropic.claude-3-5-haiku-20241022-v1:0" />
           </Form.Item>
           <Form.Item label="Muestras por día" name="measurementSampleSize">
             <InputNumber min={1} style={{ width: '100%' }} />

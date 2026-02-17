@@ -36,6 +36,7 @@ Región principal: `us-east-1`
 ### S3
 - Bucket frontend (SPA): `iadvisors-bayer-preprod-frontend20251202172221317100000001`
 - Bucket uploads (adjuntos temporales): `iadvisors-bayer-preprod-uploads20251202172222130200000003`
+- Bucket KB (documentos RAG): `<terraform output kb_bucket>`
   - Lifecycle: expira objetos a 7 días
   - Encripción: AES256
   - Public access block: habilitado (privado)
@@ -72,9 +73,14 @@ Región principal: `us-east-1`
   - Image: `741448945431.dkr.ecr.us-east-1.amazonaws.com/iadvisors-bayer-preprod-api:latest`
   - Puerto: `5001`
   - Secrets/params en runtime:
-    - Secrets Manager: `iadvisors-bayer-preprod-openai` (campos `apiKey`, `assistantId`, `vectorStoreId`)
+    - Secrets Manager: `iadvisors-bayer-preprod-aurora` (`username`, `password`, `host`, `dbname`, `port`)
     - SSM: `/iadvisors-bayer-preprod/brands` y `/iadvisors-bayer-preprod/disable_measurement_job`
   - Variables de entorno adicionales:
+    - `AI_PROVIDER=bedrock`
+    - `BEDROCK_REGION=us-east-1`
+    - `BEDROCK_MODEL_ID_DEFAULT=<model-id>`
+    - `BEDROCK_MEASUREMENT_MODEL=<model-id>`
+    - `KB_BUCKET=<bucket-kb>`
     - `COGNITO_USER_POOL_ID=us-east-1_h2GrYu37Z`
     - `COGNITO_CLIENT_ID=kkj80nol9b8vhoic370921rdl`
     - `COGNITO_REGION=us-east-1`
@@ -86,6 +92,13 @@ Región principal: `us-east-1`
 - Repositorio: `iadvisors-bayer-preprod-api`
 - Convención: `latest` + opcional tag por SHA (`${GITHUB_SHA}` en GitHub Actions)
 
+### Bedrock + Knowledge Base
+- Runtime: Amazon Bedrock (`Converse`, `Retrieve`, `RetrieveAndGenerate`)
+- Colección vectorial: OpenSearch Serverless (`VECTORSEARCH`) compartida para KB.
+- KB por marca: creada/actualizada por backend usando `BEDROCK_KB_ROLE_ARN` y `BEDROCK_KB_COLLECTION_ARN`.
+- Data Source por marca: prefijo S3 `kb/<brand_id>/` en `KB_BUCKET`.
+- Rol de servicio KB: `<terraform output bedrock_kb_role_arn>`.
+
 ### Aurora PostgreSQL + RDS Proxy (infra lista)
 - Aurora cluster: `iadvisors-bayer-preprod-aurora` (engine `aurora-postgresql`, versión `15.13`)
 - DB name: `iadvisors`
@@ -96,7 +109,6 @@ Región principal: `us-east-1`
 
 ### Secrets Manager y SSM
 - Secrets Manager:
-  - `iadvisors-bayer-preprod-openai`
   - `iadvisors-bayer-preprod-aurora`
 - SSM Parameter Store:
   - `/iadvisors-bayer-preprod/brands` (catálogo de marcas)
@@ -184,9 +196,10 @@ aws cloudfront create-invalidation --distribution-id E2ZO7JQ06J9PLY --paths "/*"
 - Causa típica: el target de EventBridge ejecuta el task definition del backend sin override, por lo que inicia el servidor Express y nunca termina.
 - Solución: configurar `containerOverrides.command` para ejecutar un runner (una sola vez) y salir. Luego detener las tareas “huérfanas”.
 
-### Job de mediciones falla con 401 en OpenAI
-- Verifica el secreto `iadvisors-bayer-preprod-openai` (campo `apiKey`) y que la key esté vigente.
-- Revisa logs en `/aws/ecs/iadvisors-bayer-preprod-api` para errores del job.
+### Job de mediciones falla con errores Bedrock
+- Verifica permisos IAM del task role para `bedrock:InvokeModel`.
+- Confirma que el `BEDROCK_MEASUREMENT_MODEL` está habilitado en la cuenta/región.
+- Revisa logs en `/aws/ecs/iadvisors-bayer-preprod-api` para detalles del request ID.
 
 ### Login falla con 401/500 en `/api/users/login`
 - Verifica `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` y `COGNITO_REGION` en el task de ECS.
