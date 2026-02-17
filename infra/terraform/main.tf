@@ -1282,6 +1282,49 @@ resource "aws_wafv2_web_acl" "alb" {
   }
 
   rule {
+    name     = "AllowFilesUpload"
+    priority = 0
+    action {
+      allow {}
+    }
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            positional_constraint = "STARTS_WITH"
+            search_string         = "/api/files"
+            field_to_match {
+              uri_path {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+        statement {
+          byte_match_statement {
+            positional_constraint = "EXACTLY"
+            search_string         = "POST"
+            field_to_match {
+              method {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowFilesUpload"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
     name     = "AWS-AWSManagedRulesCommonRuleSet"
     priority = 1
     override_action {

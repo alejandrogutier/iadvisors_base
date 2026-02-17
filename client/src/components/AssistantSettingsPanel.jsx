@@ -241,6 +241,12 @@ const AssistantSettingsPanel = () => {
             <Form.Item label="Guardrail ID" name="guardrail_id">
               <Input placeholder="gr-xxxxxxxx" />
             </Form.Item>
+            <Form.Item name="knowledge_base_id" hidden>
+              <Input />
+            </Form.Item>
+            <Form.Item name="knowledge_base_status" hidden>
+              <Input />
+            </Form.Item>
             <Form.Item label="Seleccionar KB existente">
               <Space.Compact block>
                 <Select
@@ -253,6 +259,10 @@ const AssistantSettingsPanel = () => {
                   value={selectedKnowledgeBaseId || undefined}
                   onChange={(value) => {
                     form.setFieldValue('knowledge_base_id', value || '');
+                    const nextStatus = value
+                      ? knowledgeBases.find((kb) => kb?.id === value)?.status || 'ACTIVE'
+                      : '';
+                    form.setFieldValue('knowledge_base_status', nextStatus);
                   }}
                   style={{ width: '100%' }}
                 />
@@ -265,12 +275,6 @@ const AssistantSettingsPanel = () => {
                   Crear KB
                 </Button>
               </Space.Compact>
-            </Form.Item>
-            <Form.Item label="Knowledge Base ID" name="knowledge_base_id">
-              <Input placeholder="kb-xxxxxxxx" />
-            </Form.Item>
-            <Form.Item label="Estado Knowledge Base" name="knowledge_base_status">
-              <Input placeholder="ACTIVE / CREATING / FAILED / PENDING_CONFIG" />
             </Form.Item>
           </Form>
         </Spin>

@@ -123,6 +123,7 @@ Región principal: `us-east-1`
 - Web ACL regional: `iadvisors-bayer-preprod-waf`
 - Asociado al ALB (no a CloudFront)
 - Reglas: `AWSManagedRulesCommonRuleSet` + rate limit (IP)
+- Excepcion operativa: `AllowFilesUpload` permite `POST /api/files*` para evitar falsos positivos del managed rule set al subir documentos (multipart) para la Knowledge Base.
 
 ### CloudWatch
 - Log groups:
