@@ -18,6 +18,7 @@ import { useBrand } from '../context/BrandContext';
 
 const roleOptions = [
   { label: 'Administrador', value: 'admin' },
+  { label: 'Analista', value: 'analyst' },
   { label: 'Usuario', value: 'user' }
 ];
 

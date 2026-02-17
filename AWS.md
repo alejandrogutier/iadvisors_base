@@ -2,7 +2,7 @@
 
 Documento operativo para entender qué está desplegado en AWS, cómo funciona el routing, cómo desplegar, cómo validar salud y cómo conectarse a los servicios de datos.
 
-Auditado: **2026-02-13**  
+Auditado: **2026-02-17**  
 Cuenta AWS: `741448945431`  
 Región principal: `us-east-1`
 
@@ -46,6 +46,18 @@ Región principal: `us-east-1`
 - Dominio default: `d3c70eu0nxorn3.amplifyapp.com`
 - Repositorio conectado: `https://github.com/alejandrogutier/iadvisors_base`
 
+### Cognito
+- User Pool ID: `us-east-1_h2GrYu37Z`
+- User Pool name: `iadvisors-bayer-preprod-users`
+- App Client ID: `kkj80nol9b8vhoic370921rdl` (sin secret, `USER_PASSWORD_AUTH`)
+- Grupos:
+  - `admin` (precedence `1`)
+  - `analyst` (precedence `2`)
+- Variables de runtime requeridas en API:
+  - `COGNITO_USER_POOL_ID`
+  - `COGNITO_CLIENT_ID`
+  - `COGNITO_REGION`
+
 ### ALB (Application Load Balancer)
 - Nombre: `iadvisors-bayer-preprod-alb`
 - DNS: `iadvisors-bayer-preprod-alb-1320845857.us-east-1.elb.amazonaws.com`
@@ -55,13 +67,17 @@ Región principal: `us-east-1`
 ### ECS Fargate
 - Cluster: `iadvisors-bayer-preprod-cluster`
 - Service: `iadvisors-bayer-preprod-api` (desired normalmente `1`)
-- Task definition: `iadvisors-bayer-preprod-api:2`
+- Task definition: `iadvisors-bayer-preprod-api:3`
   - Container: `api`
   - Image: `741448945431.dkr.ecr.us-east-1.amazonaws.com/iadvisors-bayer-preprod-api:latest`
   - Puerto: `5001`
   - Secrets/params en runtime:
     - Secrets Manager: `iadvisors-bayer-preprod-openai` (campos `apiKey`, `assistantId`, `vectorStoreId`)
     - SSM: `/iadvisors-bayer-preprod/brands` y `/iadvisors-bayer-preprod/disable_measurement_job`
+  - Variables de entorno adicionales:
+    - `COGNITO_USER_POOL_ID=us-east-1_h2GrYu37Z`
+    - `COGNITO_CLIENT_ID=kkj80nol9b8vhoic370921rdl`
+    - `COGNITO_REGION=us-east-1`
 - Auto Scaling:
   - Min `1`, Max `4`
   - Target tracking por CPU (target `60%`)
@@ -113,6 +129,9 @@ Región principal: `us-east-1`
   - `AWS_ACCESS_KEY_STATUS`
   - `AWS_ACCESS_KEY_CREATE_DATE`
   - `AMPLIFY_APP_ID`
+  - `COGNITO_USER_POOL_ID`
+  - `COGNITO_CLIENT_ID`
+  - `COGNITO_REGION`
 
 ### Comandos útiles
 ```bash
@@ -125,6 +144,10 @@ aws cloudfront get-distribution --id E2ZO7JQ06J9PLY --query 'Distribution.Status
 
 # Estado app Amplify
 aws amplify get-app --app-id $AMPLIFY_APP_ID --query 'app.{name:name,defaultDomain:defaultDomain}' --output table
+
+# Estado Cognito
+aws cognito-idp describe-user-pool --user-pool-id $COGNITO_USER_POOL_ID --query 'UserPool.{Name:Name,Id:Id,Status:Status}' --output table
+aws cognito-idp describe-user-pool-client --user-pool-id $COGNITO_USER_POOL_ID --client-id $COGNITO_CLIENT_ID --query 'UserPoolClient.{ClientName:ClientName,ClientId:ClientId}' --output table
 
 # Validación rápida de routing
 curl -I https://d1jd44v3p51cpx.cloudfront.net/api/health
@@ -164,6 +187,17 @@ aws cloudfront create-invalidation --distribution-id E2ZO7JQ06J9PLY --paths "/*"
 ### Job de mediciones falla con 401 en OpenAI
 - Verifica el secreto `iadvisors-bayer-preprod-openai` (campo `apiKey`) y que la key esté vigente.
 - Revisa logs en `/aws/ecs/iadvisors-bayer-preprod-api` para errores del job.
+
+### Login falla con 401/500 en `/api/users/login`
+- Verifica `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` y `COGNITO_REGION` en el task de ECS.
+- Confirma permisos IAM del task role para `cognito-idp:InitiateAuth` y `cognito-idp:AdminSetUserPassword`.
+- Prueba credenciales directas contra Cognito:
+  ```bash
+  aws cognito-idp initiate-auth \
+    --auth-flow USER_PASSWORD_AUTH \
+    --client-id $COGNITO_CLIENT_ID \
+    --auth-parameters USERNAME=admin@tu-dominio.com,PASSWORD='PasswordSegura123!'
+  ```
 
 ### Aurora/RDS Proxy no son accesibles desde tu máquina
 - Es esperado: no hay endpoint público.

@@ -1053,7 +1053,7 @@ function sanitizeUser(user) {
   };
 }
 
-function createUser({ name, email, password, role }) {
+function createUser({ name, email, password, role, enforceRole = false }) {
   const existing = findUserByEmail.get(email);
   if (existing) {
     const err = new Error('EMAIL_EXISTS');
@@ -1065,9 +1065,9 @@ function createUser({ name, email, password, role }) {
     err.code = 'PASSWORD_REQUIRED';
     throw err;
   }
-  const normalizedRole = role === 'admin' ? 'admin' : 'user';
+  const normalizedRole = ['admin', 'analyst', 'user'].includes(role) ? role : 'user';
   const adminCount = countAdminsStmt.get().total;
-  const assignedRole = adminCount === 0 ? 'admin' : normalizedRole;
+  const assignedRole = enforceRole ? normalizedRole : (adminCount === 0 ? 'admin' : normalizedRole);
   const user = {
     id: uuid(),
     name,
@@ -1278,7 +1278,7 @@ function deleteReport(reportId) {
 }
 
 function updateUserRole({ userId, role }) {
-  if (!['admin', 'user'].includes(role)) {
+  if (!['admin', 'analyst', 'user'].includes(role)) {
     const err = new Error('INVALID_ROLE');
     err.code = 'INVALID_ROLE';
     throw err;

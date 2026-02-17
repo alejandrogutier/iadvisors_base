@@ -16,17 +16,17 @@ Aplicación full-stack que permite a los equipos de Bayer/Merkle evaluar y contr
 - [Recursos adicionales](#recursos-adicionales)
 
 ## Resumen rápido
-- **Casos principales**: registro/login de usuarios, chat con hilos multi-marca, subida de archivos al vector store, panel de reportes, seguimiento de acciones (follow-ups), dashboard público y módulo administrativo para usuarios, marcas y asistente.
+- **Casos principales**: login de usuarios con AWS Cognito, chat con hilos multi-marca, subida de archivos al vector store, panel de reportes, seguimiento de acciones (follow-ups), dashboard público y módulo administrativo para usuarios, marcas y asistente.
 - **Stack**: React 19 + Vite + Ant Design en el frontend; Express 5 + Better SQLite 3 + OpenAI SDK en el backend.
 - **Persistencia local**: base SQLite (`iadvisors.db`) con tablas para usuarios, marcas, hilos, mensajes, reportes, follow-ups y mediciones.
 - **Multimarca**: todas las operaciones autenticadas se ejecutan en el contexto de una marca seleccionada y propagada mediante el header `x-brand-id` definido por el `BrandContext` del frontend.
 - **Integraciones externas**: API de OpenAI para asistentes, vector stores, files y responses; credenciales de AWS pre-configuradas en `.env` para los despliegues gestionados por el equipo de infraestructura.
-- **Seguridad**: contraseñas con PBKDF2, sesiones persistidas en `localStorage`, soporte para roles (`user`, `manager`, `admin`) y filtro de reportes/seguimientos por usuario.
+- **Seguridad**: autenticación centralizada en AWS Cognito, sesiones persistidas en `localStorage`, soporte para roles (`user`, `analyst`, `admin`) y filtro de reportes/seguimientos por usuario.
 
 ## Arquitectura de la solución
 
 ### Flujo general
-1. El usuario se registra o inicia sesión mediante `/api/users` y el frontend guarda la sesión en `localStorage`.
+1. El usuario inicia sesión vía `/api/users/login`; el backend valida credenciales en Cognito y el frontend guarda la sesión en `localStorage`.
 2. Tras autenticarse, el `BrandContext` selecciona una marca asignada y envía el ID en `x-brand-id` en cada llamada.
 3. El chat crea/recupera hilos en SQLite y sincroniza mensajes con la API de OpenAI (assistants + vector store).
 4. Las cargas de archivos pasan por `multer`, se suben al vector store de la marca y quedan disponibles para futuras respuestas.
@@ -38,8 +38,9 @@ Aplicación full-stack que permite a los equipos de Bayer/Merkle evaluar y contr
 - **Backend (`server/`)**: Express 5 con routers modulares para usuarios, chat, archivos, reportes, admin, mediciones, follow-ups, dashboard público y marcas. Usa `multer` para uploads, `node-cron` para jobs y `openai` SDK para hilos, archivos y mediciones.
 - **Base de datos**: `better-sqlite3` con migraciones automáticas al inicio (`server/src/db.js`). Los IDs se generan con `uuid.v4`.
 - **Servicios externos**:
- - **OpenAI**: `client.beta.threads.*`, `client.vectorStores.*`, `client.responses.create` y `client.models.list`.
-  - **AWS IAM**: las credenciales se cargan vía `.env` para los despliegues que integran servicios AWS (actualmente solo se almacenan y documentan).
+- **OpenAI**: `client.beta.threads.*`, `client.vectorStores.*`, `client.responses.create` y `client.models.list`.
+- **AWS Cognito**: autenticación con `USER_PASSWORD_AUTH` y mapeo de grupos (`admin`, `analyst`) a roles locales.
+- **AWS IAM**: las credenciales se cargan vía `.env` para despliegues y operación de AWS CLI.
   - **Archivos locales**: cargas temporales en `/tmp` para imágenes del chat y documentos del vector store.
 
 ## Arquitectura en AWS (pre-productivo)
@@ -94,6 +95,9 @@ Consulta la sección “Checklist de alistamiento para producción” en `ARCHIT
 | `AWS_ACCESS_KEY_STATUS` | Estado de la access key (auditoría interna). | Sí | `Active` |
 | `AWS_ACCESS_KEY_CREATE_DATE` | Fecha de creación de la access key. | Sí | `2025-12-02T15:14:24+00:00` |
 | `AMPLIFY_APP_ID` | ID de la app de AWS Amplify usada para despliegues frontend administrados. | No | `dxxxxxxxxxxxx` |
+| `COGNITO_USER_POOL_ID` | ID del User Pool de Cognito usado por `/api/users/login`. | Sí | `us-east-1_xxxxxxxx` |
+| `COGNITO_CLIENT_ID` | App Client ID de Cognito para flujo `USER_PASSWORD_AUTH`. | Sí | `xxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| `COGNITO_REGION` | Región del User Pool de Cognito. | No | `us-east-1` |
 | `DISABLE_MEASUREMENT_JOB` | Ajusta a `true` para omitir el cron programado en entornos locales. | No | `false` |
 
 > Mantén las credenciales reales únicamente en `.env` locales o inyectadas en el entorno de ejecución. Nunca se versionan archivos `.env` reales.
@@ -112,7 +116,7 @@ La base `iadvisors.db` vive en `server/` (o en `/app/data` cuando se usa Docker)
 | Tabla | Uso |
 | --- | --- |
 | `brands` | Configuración por marca: asistente, vector store, prompts y parámetros de medición. |
-| `users` | Nombre, correo, `password_hash` (PBKDF2) y rol. |
+| `users` | Nombre, correo, `password_hash` local de compatibilidad y rol sincronizado con Cognito. |
 | `user_brands` | Relación muchos-a-muchos usuario ↔ marca con bandera de marca predeterminada. |
 | `threads` | Hilos de conversación (ID local + `openai_thread_id`, título, `brand_id`). |
 | `messages` | Historial de cada hilo, incluye `display_metadata` y `openai_message_id`. |
@@ -126,7 +130,7 @@ Indices adicionales (`idx_user_brands_*`, `idx_messages_*`, etc.) optimizan filt
 
 > Todas las rutas (excepto `/health`, `/api/users/*` y `/api/brands` públicos) requieren el header `x-brand-id` con una marca válida asociada al usuario autenticado.
 
-- **`/api/users`**: registro (`POST /register`), login (`POST /login`), asignación inicial de contraseña (`POST /set-password`), cambio de contraseña (`POST /change-password`), actualización de perfil (`PUT /:userId`) y consulta (`GET /:userId`).
+- **`/api/users`**: login (`POST /login`) validado en Cognito, cambio de contraseña (`POST /change-password`) en Cognito, actualización de perfil local (`PUT /:userId`, sin cambio de correo) y consulta (`GET /:userId`). `POST /register` y `POST /set-password` quedan deshabilitados.
 - **`/api/chat`**: historial (`GET /:userId/history`), lista/creación/renombrado de hilos, envío de mensajes (`POST /message` con texto + imagen ≤ 6 MB), listado de mensajes por hilo y consulta de perfiles de comunicación (`GET /communication-profiles`).
 - **`/api/files`**: lista el vector store de la marca, sube archivos (PDF, DOC, TXT, CSV) a OpenAI y permite eliminarlos.
 - **`/api/reports`**: creación de reportes sobre respuestas, listado filtrado por rol, resolución y eliminación (con controles de permisos).
@@ -146,7 +150,7 @@ Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas ru
   - `ThemeContext`: alterna entre tema claro y oscuro y actualiza estilos CSS.
 - **Layout**: `AppLayout` (Ant Design `Layout`) con menú lateral condicional según el rol, selector de marca, toggle de tema y avatar con acceso al perfil. Las rutas están protegidas por `ProtectedRoute` y, para vistas críticas, por `AdminRoute`.
 - **Pantallas**:
-  - `RegisterPage`: flujo inicial para registro/login con pestañas (incluye “Configurar contraseña”).
+  - `RegisterPage` (ruta `/login`): pantalla de inicio de sesión contra Cognito.
   - `ChatPage`: panel de conversaciones, creación/renombrado de hilos, `ChatPanel` con Markdown rendering, selección de formatos de contenido/redes, perfiles de comunicación/arquetipos, adjuntos de imagen y envío de reportes.
   - `VectorStorePage`: integra `FileManager` para subir/borrar archivos en el vector store de la marca.
   - `ReportsPage`: `ReportCenter` para ver y resolver reportes con filtros y permisos sobre cada registro.
@@ -227,7 +231,7 @@ Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas ru
    ```
 3. **Migración de datos**: ejecuta `npm run migrate:sqlite-to-pg` en `server/` con las variables `PG_CONNECTION_STRING` (o `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) apuntando al endpoint del RDS Proxy. Esto copiará marcas, usuarios, hilos, mensajes, reportes, followups y mediciones desde SQLite hacia Aurora.
    > Aurora vive en subredes privadas; ejecuta el script desde una tarea ECS temporal, un bastion o cualquier host dentro de la VPC.
-4. **Secrets en runtime**: el task de ECS inyecta las credenciales de OpenAI (`OPENAI_API_KEY`, `OPENAI_ASSISTANT_ID`, `OPENAI_VECTOR_STORE_ID` y defaults de marca) desde Secrets Manager, además del catálogo de marcas (`BRAND_CATALOG`) y la bandera `DISABLE_MEASUREMENT_JOB` desde Parameter Store (SSM). Los `.env` no se distribuyen en contenedores.
+4. **Secrets/variables en runtime**: el task de ECS inyecta las credenciales de OpenAI (`OPENAI_API_KEY`, `OPENAI_ASSISTANT_ID`, `OPENAI_VECTOR_STORE_ID` y defaults de marca) desde Secrets Manager, además del catálogo de marcas (`BRAND_CATALOG`) y la bandera `DISABLE_MEASUREMENT_JOB` desde Parameter Store (SSM). Para auth, también define `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` y `COGNITO_REGION`. Los `.env` no se distribuyen en contenedores.
 5. **Job de mediciones**: EventBridge ejecuta el task de ECS con el cron definido en `measurement_schedule_expression`. Puedes pausar el job cambiando el parámetro `/iadvisors-bayer-preprod/disable_measurement_job` a `true`.
 6. **Frontend**: genera el build con la API apuntando a `/api` (CloudFront lo proxya al ALB) y sincroniza con el bucket indicado por Terraform. La distribución aplica un `viewer-request` function para reescribir rutas SPA a `/index.html` (excepto `/api/*`), evitando que los errores 4xx/5xx de la API se conviertan en HTML.
    ```bash
@@ -286,11 +290,12 @@ curl -I https://$CLOUDFRONT_DOMAIN
 - **Docker multi-arquitectura**: ECS Fargate estándar ejecuta `linux/amd64`; usa `docker buildx` para evitar `CannotPullContainerError`.
 - **Front + API**: el build debe usar `VITE_API_BASE=/api` y la distribución CloudFront debe tener el comportamiento `/api/*` apuntando al ALB.
 - **Migraciones**: `npm run migrate:sqlite-to-pg` requiere conectividad privada; ejecútalo dentro de la VPC (p.ej. tarea Fargate temporal) y respalda `iadvisors.db` antes de correrlo.
-- **Usuarios administradores**: si no existe un `admin`, crea uno ejecutando desde `server/`:
+- **Usuarios de acceso**: en modo Cognito, crea usuarios con AWS CLI y asígnalos a grupos `admin`/`analyst`:
   ```bash
-  npm run seed:admin -- --email admin@tu-dominio.com --password "ContraseñaSegura123" --name "Admin Bayer"
+  aws cognito-idp admin-create-user --user-pool-id $COGNITO_USER_POOL_ID --username admin@tu-dominio.com --user-attributes Name=email,Value=admin@tu-dominio.com Name=email_verified,Value=true --message-action SUPPRESS
+  aws cognito-idp admin-set-user-password --user-pool-id $COGNITO_USER_POOL_ID --username admin@tu-dominio.com --password "PasswordSegura123!" --permanent
+  aws cognito-idp admin-add-user-to-group --user-pool-id $COGNITO_USER_POOL_ID --username admin@tu-dominio.com --group-name admin
   ```
-  El script se conecta a la misma base configurada por `DATABASE_PATH`/`PG*` y asigna automáticamente el rol `admin`.
 
 ## Recursos adicionales
 - `server/src/data/communicationProfiles.js`: catálogo de arquetipos, tonos y subtonos disponibles en el panel de conversación.

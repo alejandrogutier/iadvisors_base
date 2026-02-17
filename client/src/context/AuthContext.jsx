@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import api from '../api';
 
 const AuthContext = createContext(null);
@@ -55,12 +55,6 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user?.id]);
 
-  const registerUser = async ({ name, email, password }) => {
-    const { data } = await api.post('/users/register', { name, email, password });
-    setUser(data.user);
-    return data.user;
-  };
-
   const loginUser = async ({ email, password }) => {
     const { data } = await api.post('/users/login', { email, password });
     setUser(data.user);
@@ -88,17 +82,13 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('iadvisors_user');
   };
 
-  const value = useMemo(
-    () => ({
-      user,
-      registerUser,
-      loginUser,
-      updateProfile,
-      changePassword,
-      logout
-    }),
-    [user]
-  );
+  const value = {
+    user,
+    loginUser,
+    updateProfile,
+    changePassword,
+    logout
+  };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

@@ -71,8 +71,11 @@ const ProfileModal = ({ open, onClose }) => {
               { type: 'email', message: 'Correo inválido' }
             ]}
           >
-            <Input />
+            <Input disabled />
           </Form.Item>
+          <Typography.Paragraph type="secondary">
+            El correo se administra en Cognito.
+          </Typography.Paragraph>
           <Form.Item>
             <Button type="primary" htmlType="submit" block>
               Guardar cambios
@@ -117,7 +120,7 @@ const ProfileModal = ({ open, onClose }) => {
             </Button>
           </Form.Item>
           <Typography.Paragraph type="secondary">
-            Tu contraseña se almacena encriptada mediante PBKDF2.
+            El cambio de contraseña se aplica directamente en AWS Cognito.
           </Typography.Paragraph>
         </Form>
       )

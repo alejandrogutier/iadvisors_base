@@ -474,6 +474,57 @@ resource "aws_ssm_parameter" "measurement_flag" {
   value = "false"
 }
 
+resource "aws_cognito_user_pool" "main" {
+  name = "${local.name_prefix}-users"
+
+  username_attributes      = ["email"]
+  auto_verified_attributes = ["email"]
+
+  account_recovery_setting {
+    recovery_mechanism {
+      name     = "verified_email"
+      priority = 1
+    }
+  }
+
+  password_policy {
+    minimum_length                   = 12
+    require_lowercase                = true
+    require_numbers                  = true
+    require_symbols                  = true
+    require_uppercase                = true
+    temporary_password_validity_days = 7
+  }
+
+  tags = local.merged_tags
+}
+
+resource "aws_cognito_user_pool_client" "web" {
+  name         = "${local.name_prefix}-web"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  generate_secret = false
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_USER_SRP_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH"
+  ]
+}
+
+resource "aws_cognito_user_group" "admin" {
+  user_pool_id = aws_cognito_user_pool.main.id
+  name         = "admin"
+  description  = "Administradores iAdvisors"
+  precedence   = 1
+}
+
+resource "aws_cognito_user_group" "analyst" {
+  user_pool_id = aws_cognito_user_pool.main.id
+  name         = "analyst"
+  description  = "Analistas iAdvisors"
+  precedence   = 2
+}
+
 ###############################
 # Aurora y proxy
 ###############################
@@ -769,6 +820,14 @@ resource "aws_iam_role_policy" "ecs_secrets" {
           aws_ssm_parameter.brand_catalog.arn,
           aws_ssm_parameter.measurement_flag.arn
         ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "cognito-idp:InitiateAuth",
+          "cognito-idp:AdminSetUserPassword"
+        ],
+        Resource = "*"
       }
     ]
   })
@@ -817,6 +876,18 @@ locals {
     {
       name  = "PORT"
       value = "5001"
+    },
+    {
+      name  = "COGNITO_USER_POOL_ID"
+      value = aws_cognito_user_pool.main.id
+    },
+    {
+      name  = "COGNITO_CLIENT_ID"
+      value = aws_cognito_user_pool_client.web.id
+    },
+    {
+      name  = "COGNITO_REGION"
+      value = var.aws_region
     }
   ]
 
@@ -1256,4 +1327,14 @@ output "uploads_bucket" {
 output "measurement_rule_arn" {
   value       = aws_cloudwatch_event_rule.measurements.arn
   description = "ARN del EventBridge rule para mediciones"
+}
+
+output "cognito_user_pool_id" {
+  value       = aws_cognito_user_pool.main.id
+  description = "ID del User Pool de Cognito para autenticacion"
+}
+
+output "cognito_user_pool_client_id" {
+  value       = aws_cognito_user_pool_client.web.id
+  description = "Client ID del User Pool para login USER_PASSWORD_AUTH"
 }

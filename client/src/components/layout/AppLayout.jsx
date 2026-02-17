@@ -71,7 +71,7 @@ const AppLayout = () => {
       }
       if (key === 'logout') {
         logout();
-        navigate('/register', { replace: true });
+        navigate('/login', { replace: true });
       }
     }
   };

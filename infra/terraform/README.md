@@ -1,6 +1,6 @@
 # Infraestructura como código – Terraform
 
-Este directorio contiene una configuración de Terraform lista para desplegar el entorno pre-productivo descrito en `ARCHITECTURE.md`. Los recursos creados incluyen VPC multi-AZ, subredes públicas/privadas, NAT Gateways, S3 + CloudFront para el frontend, ECS Fargate detrás de un ALB, Aurora PostgreSQL Serverless v2 con RDS Proxy, Secrets Manager/Parameter Store, CloudWatch (logs, alarms y dashboard), WAF, EventBridge para el job de mediciones y buckets auxiliares para adjuntos y backups.
+Este directorio contiene una configuración de Terraform lista para desplegar el entorno pre-productivo descrito en `ARCHITECTURE.md`. Los recursos creados incluyen VPC multi-AZ, subredes públicas/privadas, NAT Gateways, S3 + CloudFront para el frontend, ECS Fargate detrás de un ALB, Cognito (User Pool + App Client + grupos), Aurora PostgreSQL Serverless v2 con RDS Proxy, Secrets Manager/Parameter Store, CloudWatch (logs, alarms y dashboard), WAF, EventBridge para el job de mediciones y buckets auxiliares para adjuntos y backups.
 
 ## Requisitos previos
 
@@ -56,7 +56,7 @@ terraform plan -out tfplan
 terraform apply tfplan
 ```
 
-Tras la aplicación se mostrará el dominio asignado por CloudFront (`cloudfront_domain`), el DNS del ALB (`alb_dns_name`), los buckets y el repositorio ECR para publicar la imagen del backend.
+Tras la aplicación se mostrará el dominio asignado por CloudFront (`cloudfront_domain`), el DNS del ALB (`alb_dns_name`), los buckets, el repositorio ECR para publicar la imagen del backend y los IDs de Cognito (`cognito_user_pool_id`, `cognito_user_pool_client_id`).
 
 ## Tareas posteriores
 

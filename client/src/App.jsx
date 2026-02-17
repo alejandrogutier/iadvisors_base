@@ -16,7 +16,7 @@ import AdminBrandsPage from './pages/AdminBrandsPage';
 import './App.css';
 
 const ROUTE_TITLE_MAP = {
-  '/register': 'Registro',
+  '/login': 'Login',
   '/dashboard': 'Dashboard',
   '/chat': 'Conversaciones',
   '/reports': 'Reportes',
@@ -62,7 +62,7 @@ const App = () => {
 
   return (
     <Routes>
-      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/login" element={<RegisterPage />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>
           <Route path="/" element={<Navigate to="/chat" replace />} />
@@ -79,7 +79,7 @@ const App = () => {
           </Route>
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/chat" replace />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );
 };
