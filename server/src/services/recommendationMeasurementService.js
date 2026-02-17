@@ -62,12 +62,28 @@ function extractJsonPayload(text = '') {
   }
 }
 
+function resolveBedrockModelId(rawValue) {
+  const candidate = typeof rawValue === 'string' ? rawValue.trim() : '';
+  if (!candidate) return null;
+  if (candidate.startsWith('us.') || candidate.startsWith('global.')) {
+    return candidate;
+  }
+  if (
+    /^(anthropic|meta|amazon|mistral|cohere|ai21|deepseek|writer|stability)\./.test(candidate)
+  ) {
+    return `us.${candidate}`;
+  }
+  return candidate;
+}
+
 function resolveMeasurementModel(model) {
   const fallback =
-    process.env.BEDROCK_MEASUREMENT_MODEL ||
-    process.env.BEDROCK_MODEL_ID_DEFAULT ||
-    process.env.DEFAULT_BRAND_MODEL_ID ||
-    'anthropic.claude-3-5-haiku-20241022-v1:0';
+    resolveBedrockModelId(
+      process.env.BEDROCK_MEASUREMENT_MODEL ||
+        process.env.BEDROCK_MODEL_ID_DEFAULT ||
+        process.env.DEFAULT_BRAND_MODEL_ID ||
+        null
+    ) || 'us.anthropic.claude-3-5-haiku-20241022-v1:0';
 
   const candidate = typeof model === 'string' ? model.trim() : '';
   if (!candidate) return fallback;
@@ -77,7 +93,7 @@ function resolveMeasurementModel(model) {
     return fallback;
   }
 
-  return candidate;
+  return resolveBedrockModelId(candidate) || fallback;
 }
 
 async function queryBrandRecommendation({ question, model }) {

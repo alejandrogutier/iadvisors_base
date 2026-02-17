@@ -72,6 +72,22 @@ function inferBedrockImageFormat(mimetype = '', fallbackName = '') {
   return 'png';
 }
 
+function resolveBedrockModelId(rawValue) {
+  const candidate = typeof rawValue === 'string' ? rawValue.trim() : '';
+  if (!candidate) {
+    return null;
+  }
+  if (candidate.startsWith('us.') || candidate.startsWith('global.')) {
+    return candidate;
+  }
+  if (
+    /^(anthropic|meta|amazon|mistral|cohere|ai21|deepseek|writer|stability)\./.test(candidate)
+  ) {
+    return `us.${candidate}`;
+  }
+  return candidate;
+}
+
 function buildConversationMessages(history, imageAttachment) {
   const messages = [];
 
@@ -182,11 +198,13 @@ async function sendMessage({
   }
 
   const modelId =
-    brand.modelId ||
-    brand.assistantId ||
-    process.env.BEDROCK_MODEL_ID_DEFAULT ||
-    process.env.DEFAULT_BRAND_MODEL_ID ||
-    null;
+    resolveBedrockModelId(
+      brand.modelId ||
+        brand.assistantId ||
+        process.env.BEDROCK_MODEL_ID_DEFAULT ||
+        process.env.DEFAULT_BRAND_MODEL_ID ||
+        null
+    ) || null;
 
   if (!modelId) {
     throw new Error('No existe modelId configurado para la marca');

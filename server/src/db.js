@@ -68,6 +68,39 @@ const slugify = (value = '') =>
     .replace(/-{2,}/g, '-')
     .trim() || 'default';
 
+function isLegacyOpenAIModelId(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized.startsWith('asst_') || normalized.startsWith('gpt-') || normalized.includes('openai');
+}
+
+function normalizeModelId(value = '') {
+  const candidate = String(value || '').trim();
+  if (!candidate) {
+    return defaultBrandModelId;
+  }
+  if (isLegacyOpenAIModelId(candidate)) {
+    return defaultBrandModelId;
+  }
+  return candidate;
+}
+
+function isLegacyVectorStoreId(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized.startsWith('vs_');
+}
+
+function normalizeKnowledgeBaseId(value = '') {
+  const candidate = String(value || '').trim();
+  if (!candidate) {
+    return null;
+  }
+  if (isLegacyVectorStoreId(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
 const defaultBrandSlug = slugify(defaultBrandSlugSource);
 let resolvedDefaultBrandId = configuredDefaultBrandId;
 
@@ -640,8 +673,8 @@ function serializeMeasurementPrompts(prompts) {
 
 function formatBrandRecord(row) {
   if (!row) return null;
-  const modelId = row.model_id || row.assistant_id || defaultBrandModelId;
-  const knowledgeBaseId = row.knowledge_base_id || row.vector_store_id || null;
+  const modelId = normalizeModelId(row.model_id || row.assistant_id || defaultBrandModelId);
+  const knowledgeBaseId = normalizeKnowledgeBaseId(row.knowledge_base_id || row.vector_store_id || null);
   const knowledgeBaseStatus =
     row.knowledge_base_status || (knowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED');
 
@@ -696,20 +729,24 @@ function ensureDefaultBrandRecord() {
       }
     }
     resolvedDefaultBrandId = brand.id || configuredDefaultBrandId;
+    const normalizedModelId = normalizeModelId(
+      brand.model_id || brand.assistant_id || defaultBrandModelId
+    );
+    const normalizedKnowledgeBaseId = normalizeKnowledgeBaseId(
+      brand.knowledge_base_id || brand.vector_store_id || defaultBrandKnowledgeBaseId || null
+    );
     const payload = {
       id: resolvedDefaultBrandId,
       name: brand.name || defaultBrandName,
       slug: defaultBrandSlug || brand.slug || slugify(defaultBrandName),
       description: brand.description || 'Marca principal',
-      assistant_id: brand.assistant_id || brand.model_id || defaultBrandModelId,
-      vector_store_id: brand.vector_store_id || brand.knowledge_base_id || defaultBrandKnowledgeBaseId || '',
-      model_id: brand.model_id || brand.assistant_id || defaultBrandModelId,
-      knowledge_base_id: brand.knowledge_base_id || brand.vector_store_id || defaultBrandKnowledgeBaseId || null,
+      assistant_id: normalizedModelId,
+      vector_store_id: normalizedKnowledgeBaseId || '',
+      model_id: normalizedModelId,
+      knowledge_base_id: normalizedKnowledgeBaseId,
       knowledge_base_status:
         brand.knowledge_base_status ||
-        (brand.knowledge_base_id || brand.vector_store_id || defaultBrandKnowledgeBaseId
-          ? 'ACTIVE'
-          : 'NOT_CONFIGURED'),
+        (normalizedKnowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED'),
       guardrail_id: brand.guardrail_id || null,
       kb_data_source_id: brand.kb_data_source_id || null,
       kb_s3_prefix: brand.kb_s3_prefix || `kb/${resolvedDefaultBrandId}/`,
@@ -733,11 +770,13 @@ function ensureDefaultBrandRecord() {
     name: defaultBrandName,
     slug: defaultBrandSlug,
     description: 'Marca principal',
-    assistant_id: defaultBrandModelId,
-    vector_store_id: defaultBrandKnowledgeBaseId || '',
-    model_id: defaultBrandModelId,
-    knowledge_base_id: defaultBrandKnowledgeBaseId,
-    knowledge_base_status: defaultBrandKnowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED',
+    assistant_id: normalizeModelId(defaultBrandModelId),
+    vector_store_id: normalizeKnowledgeBaseId(defaultBrandKnowledgeBaseId) || '',
+    model_id: normalizeModelId(defaultBrandModelId),
+    knowledge_base_id: normalizeKnowledgeBaseId(defaultBrandKnowledgeBaseId),
+    knowledge_base_status: normalizeKnowledgeBaseId(defaultBrandKnowledgeBaseId)
+      ? 'ACTIVE'
+      : 'NOT_CONFIGURED',
     guardrail_id: null,
     kb_data_source_id: null,
     kb_s3_prefix: `kb/${configuredDefaultBrandId}/`,
@@ -833,14 +872,15 @@ function getBrandByIdOrThrow(brandId) {
 function normalizeBrandPayload(input = {}, existing = {}) {
   const targetId = input.id || existing.id || uuid();
   const name = input.name || existing.name || 'Nueva marca';
-  const modelId =
+  const modelId = normalizeModelId(
     input.modelId ||
-    input.assistantId ||
-    existing.model_id ||
-    existing.assistantId ||
-    existing.assistant_id ||
-    defaultBrandModelId;
-  const knowledgeBaseId =
+      input.assistantId ||
+      existing.model_id ||
+      existing.assistantId ||
+      existing.assistant_id ||
+      defaultBrandModelId
+  );
+  const knowledgeBaseId = normalizeKnowledgeBaseId(
     input.knowledgeBaseId !== undefined
       ? input.knowledgeBaseId
       : input.vectorStoreId !== undefined
@@ -849,7 +889,8 @@ function normalizeBrandPayload(input = {}, existing = {}) {
           ? existing.knowledge_base_id
           : existing.vectorStoreId !== undefined
             ? existing.vectorStoreId
-            : existing.vector_store_id || null;
+            : existing.vector_store_id || null
+  );
 
   if (!modelId) {
     const err = new Error('BRAND_CONFIG_INCOMPLETE');
