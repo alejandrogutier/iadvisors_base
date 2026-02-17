@@ -11,12 +11,20 @@ const defaultBrandModelId =
   process.env.DEFAULT_BRAND_MODEL_ID ||
   process.env.DEFAULT_BRAND_ASSISTANT_ID ||
   process.env.BEDROCK_MODEL_ID_DEFAULT ||
-  'anthropic.claude-3-5-haiku-20241022-v1:0';
+  'us.amazon.nova-lite-v1:0';
 const defaultBrandKnowledgeBaseId =
   process.env.DEFAULT_BRAND_KB_ID ||
   process.env.DEFAULT_BRAND_VECTOR_STORE_ID ||
   process.env.OPENAI_VECTOR_STORE_ID ||
   null;
+const defaultBrandDataSourceId =
+  process.env.DEFAULT_BRAND_KB_DATA_SOURCE_ID ||
+  process.env.DEFAULT_BRAND_DATA_SOURCE_ID ||
+  null;
+const defaultBrandKbS3Prefix =
+  process.env.DEFAULT_BRAND_KB_S3_PREFIX ||
+  process.env.DEFAULT_BRAND_S3_PREFIX ||
+  `kb/${configuredDefaultBrandId}/`;
 
 const defaultMeasurementModel =
   process.env.DEFAULT_BRAND_MEASUREMENT_MODEL ||
@@ -748,8 +756,8 @@ function ensureDefaultBrandRecord() {
         brand.knowledge_base_status ||
         (normalizedKnowledgeBaseId ? 'ACTIVE' : 'NOT_CONFIGURED'),
       guardrail_id: brand.guardrail_id || null,
-      kb_data_source_id: brand.kb_data_source_id || null,
-      kb_s3_prefix: brand.kb_s3_prefix || `kb/${resolvedDefaultBrandId}/`,
+      kb_data_source_id: brand.kb_data_source_id || defaultBrandDataSourceId,
+      kb_s3_prefix: brand.kb_s3_prefix || defaultBrandKbS3Prefix,
       assistant_instructions: brand.assistant_instructions || null,
       assistant_temperature:
         typeof brand.assistant_temperature === 'number' ? brand.assistant_temperature : null,
@@ -778,8 +786,8 @@ function ensureDefaultBrandRecord() {
       ? 'ACTIVE'
       : 'NOT_CONFIGURED',
     guardrail_id: null,
-    kb_data_source_id: null,
-    kb_s3_prefix: `kb/${configuredDefaultBrandId}/`,
+    kb_data_source_id: defaultBrandDataSourceId,
+    kb_s3_prefix: defaultBrandKbS3Prefix,
     assistant_instructions: null,
     assistant_temperature: null,
     assistant_top_p: null,

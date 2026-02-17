@@ -9,11 +9,14 @@ const {
   listThreadsForUser,
   findUserById,
   getLatestThreadForUser,
-  ensureUserBrandAccess
+  ensureUserBrandAccess,
+  updateBrand
 } = require('../db');
 const { buildCommunicationProfileContext } = require('../data/communicationProfiles');
 const { retrieveKnowledgeContext } = require('./knowledgeBaseService');
 const { bedrockRuntimeClient } = require('../aws/bedrockRuntimeClient');
+
+const SAFE_FALLBACK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
 
 function ensureThreadOwnership(threadId, userId, brandId) {
   const thread = getThreadById(threadId);
@@ -86,6 +89,29 @@ function resolveBedrockModelId(rawValue) {
     return `us.${candidate}`;
   }
   return candidate;
+}
+
+function resolveModelCandidates(brand) {
+  const candidates = [
+    resolveBedrockModelId(brand.modelId || brand.assistantId || null),
+    resolveBedrockModelId(process.env.BEDROCK_MODEL_ID_DEFAULT || null),
+    resolveBedrockModelId(process.env.DEFAULT_BRAND_MODEL_ID || null),
+    resolveBedrockModelId(SAFE_FALLBACK_MODEL_ID)
+  ].filter(Boolean);
+
+  return [...new Set(candidates)];
+}
+
+function isModelAccessDenied(error) {
+  const message = String(error?.message || '').toLowerCase();
+  const code = String(error?.name || error?.code || '').toLowerCase();
+  return (
+    message.includes('model access is denied') ||
+    message.includes('aws-marketplace') ||
+    message.includes('viewsubscriptions') ||
+    message.includes('subscribe') ||
+    code.includes('accessdenied')
+  );
 }
 
 function buildConversationMessages(history, imageAttachment) {
@@ -197,18 +223,11 @@ async function sendMessage({
     throw new Error('Message is required');
   }
 
-  const modelId =
-    resolveBedrockModelId(
-      brand.modelId ||
-        brand.assistantId ||
-        process.env.BEDROCK_MODEL_ID_DEFAULT ||
-        process.env.DEFAULT_BRAND_MODEL_ID ||
-        null
-    ) || null;
-
-  if (!modelId) {
+  const modelCandidates = resolveModelCandidates(brand);
+  if (!modelCandidates.length) {
     throw new Error('No existe modelId configurado para la marca');
   }
+  const preferredModelId = modelCandidates[0];
 
   let targetThread = threadId
     ? ensureThreadOwnership(threadId, userId, brand.id)
@@ -281,21 +300,58 @@ async function sendMessage({
     systemParts.push(`Contexto recuperado de la base de conocimiento:\n${knowledgeContext}`);
   }
 
-  const commandInput = {
-    modelId,
+  const commandInputBase = {
     system: systemParts.filter(Boolean).map((text) => ({ text })),
     messages: conversationMessages,
     inferenceConfig: toInferenceConfig(brand)
   };
 
   if (brand.guardrailId) {
-    commandInput.guardrailConfig = {
+    commandInputBase.guardrailConfig = {
       guardrailIdentifier: brand.guardrailId,
       guardrailVersion: process.env.BEDROCK_GUARDRAIL_VERSION || 'DRAFT'
     };
   }
 
-  const response = await bedrockRuntimeClient.send(new ConverseCommand(commandInput));
+  let response = null;
+  let resolvedModelId = null;
+  let lastError = null;
+
+  for (const modelId of modelCandidates) {
+    try {
+      response = await bedrockRuntimeClient.send(
+        new ConverseCommand({
+          modelId,
+          ...commandInputBase
+        })
+      );
+      resolvedModelId = modelId;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (isModelAccessDenied(error)) {
+        console.warn(`Modelo Bedrock sin acceso (${modelId}). Intentando fallback.`);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (!response) {
+    throw lastError || new Error('No se pudo obtener respuesta del modelo Bedrock');
+  }
+
+  if (resolvedModelId && resolvedModelId !== preferredModelId) {
+    try {
+      updateBrand(brand.id, {
+        modelId: resolvedModelId,
+        assistantId: resolvedModelId
+      });
+    } catch (error) {
+      console.warn('No se pudo persistir fallback de modelId para la marca', error.message);
+    }
+  }
+
   const assistantText = extractAssistantText(response?.output?.message?.content) || 'No encontré respuesta para esta consulta.';
 
   const savedAssistantMessage = saveMessage({
