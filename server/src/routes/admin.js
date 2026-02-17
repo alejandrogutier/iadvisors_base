@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const { ListFoundationModelsCommand } = require('@aws-sdk/client-bedrock');
+const { ListKnowledgeBasesCommand } = require('@aws-sdk/client-bedrock-agent');
 const {
   listUsersWithStats,
   createUser,
@@ -17,6 +18,11 @@ const {
 } = require('../db');
 const { requireBrand } = require('../utils/brandContext');
 const { bedrockClient } = require('../aws/bedrockClient');
+const { bedrockAgentClient } = require('../aws/bedrockAgentClient');
+const {
+  provisionBrandKnowledgeBase,
+  inferKnowledgeBaseStatus
+} = require('../services/knowledgeBaseService');
 const {
   createUserInCognito,
   updateUserRoleInCognito,
@@ -102,6 +108,32 @@ async function listAvailableModels() {
   } catch (error) {
     console.error('No se pudieron listar modelos de Bedrock', error.message);
     return fallbackModels;
+  }
+}
+
+async function listKnowledgeBases() {
+  try {
+    const response = await bedrockAgentClient.send(
+      new ListKnowledgeBasesCommand({
+        maxResults: 100
+      })
+    );
+    const items = Array.isArray(response?.knowledgeBaseSummaries)
+      ? response.knowledgeBaseSummaries
+      : [];
+
+    return items
+      .filter((item) => item?.knowledgeBaseId)
+      .map((item) => ({
+        id: item.knowledgeBaseId,
+        name: item.name || item.knowledgeBaseId,
+        status: item.status || null,
+        updatedAt: item.updatedAt || null
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    console.error('No se pudieron listar Knowledge Bases', error.message);
+    return [];
   }
 }
 
@@ -326,6 +358,54 @@ router.get('/assistant', async (req, res) => {
     const models = await listAvailableModels();
     const assistant = buildAssistantPayload(brand);
     res.json({ assistant, models });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/knowledge-bases', async (req, res) => {
+  const brand = requireBrand(req, res);
+  if (!brand) return;
+  try {
+    const knowledgeBases = await listKnowledgeBases();
+    res.json({ knowledgeBases });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/knowledge-base/provision', async (req, res) => {
+  const brand = requireBrand(req, res);
+  if (!brand) return;
+
+  try {
+    const requestedModelId =
+      typeof req.body?.modelId === 'string' && req.body.modelId.trim()
+        ? req.body.modelId.trim()
+        : brand.modelId;
+
+    const provisioned = await provisionBrandKnowledgeBase({
+      brandId: brand.id,
+      brandName: brand.name,
+      modelId: requestedModelId,
+      existingKnowledgeBaseId: brand.knowledgeBaseId,
+      existingDataSourceId: brand.kbDataSourceId,
+      kbS3Prefix: brand.kbS3Prefix
+    });
+
+    const updatedBrand = updateBrand(brand.id, {
+      modelId: provisioned.modelId || requestedModelId || brand.modelId,
+      assistantId: provisioned.modelId || requestedModelId || brand.modelId,
+      knowledgeBaseId: provisioned.knowledgeBaseId || null,
+      vectorStoreId: provisioned.knowledgeBaseId || null,
+      knowledgeBaseStatus:
+        provisioned.knowledgeBaseStatus ||
+        inferKnowledgeBaseStatus(provisioned.knowledgeBaseId),
+      kbDataSourceId: provisioned.kbDataSourceId || null,
+      kbS3Prefix: provisioned.kbS3Prefix || brand.kbS3Prefix
+    });
+
+    res.json({ brand: updatedBrand });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

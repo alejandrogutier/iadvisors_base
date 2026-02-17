@@ -6,6 +6,7 @@ import {
   Input,
   InputNumber,
   Select,
+  Space,
   Spin,
   Tag,
   Typography,
@@ -21,14 +22,20 @@ const AssistantSettingsPanel = () => {
   const [form] = Form.useForm();
   const [assistant, setAssistant] = useState(null);
   const [models, setModels] = useState([]);
+  const [knowledgeBases, setKnowledgeBases] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [kbLoading, setKbLoading] = useState(false);
+  const [kbProvisioning, setKbProvisioning] = useState(false);
   const { currentBrand, withBrandHeaders } = useBrand();
+  const selectedModel = Form.useWatch('model', form);
+  const selectedKnowledgeBaseId = Form.useWatch('knowledge_base_id', form);
 
   const loadAssistant = useCallback(async () => {
     if (!currentBrand?.id) {
       setAssistant(null);
       setModels([]);
+      setKnowledgeBases([]);
       setLoading(false);
       return;
     }
@@ -64,9 +71,28 @@ const AssistantSettingsPanel = () => {
     }
   }, [currentBrand?.id, form, withBrandHeaders]);
 
+  const loadKnowledgeBases = useCallback(async () => {
+    if (!currentBrand?.id) {
+      setKnowledgeBases([]);
+      setKbLoading(false);
+      return;
+    }
+    setKbLoading(true);
+    try {
+      const { data } = await api.get('/admin/knowledge-bases', withBrandHeaders());
+      setKnowledgeBases(Array.isArray(data.knowledgeBases) ? data.knowledgeBases : []);
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'No se pudieron cargar las Knowledge Bases';
+      antdMessage.error(errorMessage);
+    } finally {
+      setKbLoading(false);
+    }
+  }, [currentBrand?.id, withBrandHeaders]);
+
   useEffect(() => {
     loadAssistant();
-  }, [loadAssistant]);
+    loadKnowledgeBases();
+  }, [loadAssistant, loadKnowledgeBases]);
 
   const modelOptions = useMemo(() => {
     const map = new Map();
@@ -79,6 +105,27 @@ const AssistantSettingsPanel = () => {
     });
     return Array.from(map.values()).sort((a, b) => a.value.localeCompare(b.value));
   }, [models]);
+
+  const knowledgeBaseOptions = useMemo(() => {
+    const options = (knowledgeBases || [])
+      .filter((kb) => kb?.id)
+      .map((kb) => ({
+        value: kb.id,
+        label: `${kb.name || kb.id}${kb.status ? ` · ${kb.status}` : ''}`
+      }));
+
+    if (
+      selectedKnowledgeBaseId &&
+      !options.some((option) => option.value === selectedKnowledgeBaseId)
+    ) {
+      options.push({
+        value: selectedKnowledgeBaseId,
+        label: `${selectedKnowledgeBaseId} · actual`
+      });
+    }
+
+    return options.sort((a, b) => a.value.localeCompare(b.value));
+  }, [knowledgeBases, selectedKnowledgeBaseId]);
 
   const handleSave = async () => {
     try {
@@ -95,6 +142,34 @@ const AssistantSettingsPanel = () => {
       antdMessage.error(message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleProvisionKnowledgeBase = async () => {
+    setKbProvisioning(true);
+    try {
+      const { data } = await api.post(
+        '/admin/knowledge-base/provision',
+        {
+          modelId: selectedModel || null
+        },
+        withBrandHeaders()
+      );
+
+      const brand = data.brand || {};
+      form.setFieldsValue({
+        model: brand.modelId || selectedModel || '',
+        knowledge_base_id: brand.knowledgeBaseId || '',
+        knowledge_base_status: brand.knowledgeBaseStatus || ''
+      });
+      antdMessage.success('Knowledge Base provisionada o vinculada');
+      await loadKnowledgeBases();
+      await loadAssistant();
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'No se pudo provisionar la Knowledge Base';
+      antdMessage.error(errorMessage);
+    } finally {
+      setKbProvisioning(false);
     }
   };
 
@@ -165,6 +240,31 @@ const AssistantSettingsPanel = () => {
             </Form.Item>
             <Form.Item label="Guardrail ID" name="guardrail_id">
               <Input placeholder="gr-xxxxxxxx" />
+            </Form.Item>
+            <Form.Item label="Seleccionar KB existente">
+              <Space.Compact block>
+                <Select
+                  allowClear
+                  showSearch
+                  placeholder="Selecciona una Knowledge Base"
+                  options={knowledgeBaseOptions}
+                  optionFilterProp="label"
+                  loading={kbLoading}
+                  value={selectedKnowledgeBaseId || undefined}
+                  onChange={(value) => {
+                    form.setFieldValue('knowledge_base_id', value || '');
+                  }}
+                  style={{ width: '100%' }}
+                />
+                <Button
+                  type="default"
+                  onClick={handleProvisionKnowledgeBase}
+                  loading={kbProvisioning}
+                  disabled={loading || saving}
+                >
+                  Crear KB
+                </Button>
+              </Space.Compact>
             </Form.Item>
             <Form.Item label="Knowledge Base ID" name="knowledge_base_id">
               <Input placeholder="kb-xxxxxxxx" />

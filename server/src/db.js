@@ -1413,7 +1413,7 @@ function sanitizeUser(user) {
   };
 }
 
-function createUser({ name, email, password, role, enforceRole = false }) {
+function createUser({ id, name, email, password, role, enforceRole = false }) {
   const existing = findUserByEmail.get(email);
   if (existing) {
     const err = new Error('EMAIL_EXISTS');
@@ -1429,7 +1429,7 @@ function createUser({ name, email, password, role, enforceRole = false }) {
   const adminCount = countAdminsStmt.get().total;
   const assignedRole = enforceRole ? normalizedRole : (adminCount === 0 ? 'admin' : normalizedRole);
   const user = {
-    id: uuid(),
+    id: id || uuid(),
     name,
     email,
     password_hash: hashPassword(password),

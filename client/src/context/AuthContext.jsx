@@ -13,6 +13,7 @@ export const AuthProvider = ({ children }) => {
       return null;
     }
   });
+  const [isRefreshingUser, setIsRefreshingUser] = useState(Boolean(user?.id));
 
   useEffect(() => {
     if (user) {
@@ -23,10 +24,14 @@ export const AuthProvider = ({ children }) => {
   }, [user]);
 
   useEffect(() => {
-    if (!user?.id) return undefined;
+    if (!user?.id) {
+      setIsRefreshingUser(false);
+      return undefined;
+    }
 
     let ignore = false;
     const refreshUser = async () => {
+      setIsRefreshingUser(true);
       try {
         const { data } = await api.get(`/users/${user.id}`);
         if (!ignore) {
@@ -44,7 +49,29 @@ export const AuthProvider = ({ children }) => {
           });
         }
       } catch (error) {
+        const status = error?.response?.status;
+        if (status === 404 && user?.email) {
+          try {
+            const { data } = await api.get('/users/resolve', {
+              params: { email: user.email }
+            });
+            if (!ignore) {
+              setUser(data.user);
+            }
+            return;
+          } catch (resolveError) {
+            console.error('No se pudo resolver la sesion por email', resolveError);
+            if (!ignore) {
+              setUser(null);
+            }
+            return;
+          }
+        }
         console.error('No se pudo sincronizar el usuario', error);
+      } finally {
+        if (!ignore) {
+          setIsRefreshingUser(false);
+        }
       }
     };
 
@@ -84,6 +111,7 @@ export const AuthProvider = ({ children }) => {
 
   const value = {
     user,
+    isRefreshingUser,
     loginUser,
     updateProfile,
     changePassword,

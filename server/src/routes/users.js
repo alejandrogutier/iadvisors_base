@@ -43,6 +43,7 @@ function syncLocalUserFromIdentity(identity) {
 
   if (!user) {
     user = createUser({
+      id: identity?.sub || undefined,
       name: identityName,
       email: normalizedEmail,
       password: randomLocalPassword(),
@@ -158,6 +159,27 @@ router.post('/change-password', async (req, res) => {
     if (error.code === 'COGNITO_NOT_CONFIGURED') {
       return res.status(500).json({ error: 'Cognito no está configurado en el backend' });
     }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/resolve', (req, res) => {
+  const rawEmail = req.query.email;
+  const normalizedEmail = String(rawEmail || '')
+    .trim()
+    .toLowerCase();
+
+  if (!normalizedEmail) {
+    return res.status(400).json({ error: 'email es requerido' });
+  }
+
+  try {
+    const user = findUserByEmail(normalizedEmail);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+    res.json({ user: sanitizeUser(user) });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

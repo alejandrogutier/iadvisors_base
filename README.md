@@ -144,7 +144,7 @@ Indices adicionales (`idx_user_brands_*`, `idx_messages_*`, etc.) optimizan filt
 - **`/api/reports`**: creación de reportes sobre respuestas, listado filtrado por rol, resolución y eliminación (con controles de permisos).
 - **`/api/measurements`**: resumen histórico (`GET /summary`) y ejecución manual del job de mediciones (`POST /run`).
 - **`/api/followups`**: CRUD de registros de seguimiento con filtros por fecha, status y dueño; administración restringida por rol.
-- **`/api/admin`**: listado de usuarios con estadísticas, creación/edición de roles y marcas asignadas, eliminación de usuarios (sync Cognito), consulta de mensajes y ajustes de configuración Bedrock/KB por marca.
+- **`/api/admin`**: listado de usuarios con estadísticas, creación/edición de roles y marcas asignadas, eliminación de usuarios (sync Cognito), consulta de mensajes, ajustes de configuración Bedrock/KB por marca y utilidades de KB (`GET /admin/knowledge-bases`, `POST /admin/knowledge-base/provision`).
 - **`/api/public-dashboard`**: métricas agregadas para dashboards con rango de fechas configurable.
 - **`/api/brands`**: listado, creación y edición de marcas (ID, slug, `modelId`, `knowledgeBaseId`, aliases de compatibilidad `assistantId`/`vectorStoreId`).
 

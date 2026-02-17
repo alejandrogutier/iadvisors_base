@@ -157,6 +157,12 @@ router.post('/message', upload.single('image'), async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('Error in sendMessage:', error);
+    if (error.code === 'THREAD_NOT_FOUND') {
+      return res.status(404).json({ error: 'No tienes acceso a este chat' });
+    }
+    if (error.message === 'User not found') {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -183,6 +189,9 @@ router.post('/thread', async (req, res) => {
     const thread = await createThread({ userId, brand, title });
     res.json({ thread });
   } catch (error) {
+    if (error.message === 'User not found') {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
