@@ -40,6 +40,12 @@ Región principal: `us-east-1`
   - Encripción: AES256
   - Public access block: habilitado (privado)
 
+### Amplify
+- App ID: `d3c70eu0nxorn3`
+- App name: `iadvisors_base`
+- Dominio default: `d3c70eu0nxorn3.amplifyapp.com`
+- Repositorio conectado: `https://github.com/alejandrogutier/iadvisors_base`
+
 ### ALB (Application Load Balancer)
 - Nombre: `iadvisors-bayer-preprod-alb`
 - DNS: `iadvisors-bayer-preprod-alb-1320845857.us-east-1.elb.amazonaws.com`
@@ -106,6 +112,7 @@ Región principal: `us-east-1`
   - `AWS_SECRET_ACCESS_KEY`
   - `AWS_ACCESS_KEY_STATUS`
   - `AWS_ACCESS_KEY_CREATE_DATE`
+  - `AMPLIFY_APP_ID`
 
 ### Comandos útiles
 ```bash
@@ -115,6 +122,9 @@ aws sts get-caller-identity
 
 # Estado distribución CloudFront
 aws cloudfront get-distribution --id E2ZO7JQ06J9PLY --query 'Distribution.Status' --output text
+
+# Estado app Amplify
+aws amplify get-app --app-id $AMPLIFY_APP_ID --query 'app.{name:name,defaultDomain:defaultDomain}' --output table
 
 # Validación rápida de routing
 curl -I https://d1jd44v3p51cpx.cloudfront.net/api/health

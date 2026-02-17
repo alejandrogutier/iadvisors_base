@@ -93,6 +93,7 @@ Consulta la sección “Checklist de alistamiento para producción” en `ARCHIT
 | `AWS_SECRET_ACCESS_KEY` | Llave secreta IAM (mantener solo en `.env` local). | Sí | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYxxxxxxxx` |
 | `AWS_ACCESS_KEY_STATUS` | Estado de la access key (auditoría interna). | Sí | `Active` |
 | `AWS_ACCESS_KEY_CREATE_DATE` | Fecha de creación de la access key. | Sí | `2025-12-02T15:14:24+00:00` |
+| `AMPLIFY_APP_ID` | ID de la app de AWS Amplify usada para despliegues frontend administrados. | No | `dxxxxxxxxxxxx` |
 | `DISABLE_MEASUREMENT_JOB` | Ajusta a `true` para omitir el cron programado en entornos locales. | No | `false` |
 
 > Mantén las credenciales reales únicamente en `.env` locales o inyectadas en el entorno de ejecución. Nunca se versionan archivos `.env` reales.
@@ -235,6 +236,10 @@ Consulta `server/src/routes/*.js` para ver validaciones específicas o nuevas ru
    VITE_API_BASE=/api npm run build
    aws s3 sync dist s3://$FRONTEND_BUCKET --delete
    aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"
+   ```
+   Si usas Amplify para un frontend administrado adicional, lanza un deployment de rama:
+   ```bash
+   aws amplify start-job --app-id $AMPLIFY_APP_ID --branch-name main --job-type RELEASE
    ```
 
 ## CI/CD automatizado

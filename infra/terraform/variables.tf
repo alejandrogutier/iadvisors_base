@@ -106,5 +106,7 @@ variable "allowed_ingress_cidrs" {
 variable "tags" {
   type        = map(string)
   description = "Etiquetas adicionales opcionales"
-  default     = {}
+  default = {
+    iadvisors = "true"
+  }
 }

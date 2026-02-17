@@ -27,6 +27,7 @@ Este directorio contiene una configuración de Terraform lista para desplegar el
 | `measurement_schedule_expression` | Cron de EventBridge para el job de mediciones |
 | `aurora_min_capacity`, `aurora_max_capacity` | Límites de Aurora Serverless v2 |
 | `aurora_engine_version` | Versión de Aurora PostgreSQL (por defecto `15.13`) |
+| `tags` | Mapa de etiquetas adicionales para recursos (incluye `iadvisors=true` por defecto) |
 
 Define los valores sensibles en un archivo `terraform.tfvars` que **no** debe versionarse. Ejemplo:
 
