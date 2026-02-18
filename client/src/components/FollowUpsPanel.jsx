@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
@@ -88,22 +88,25 @@ const FollowUpsPanel = () => {
         })
       );
       setEntries(data.followups || []);
-    } catch (error) {
+    } catch {
       antdMessage.error('No se pudieron cargar los registros');
     } finally {
       setLoading(false);
     }
   };
 
-  const loadUsers = async () => {
-    if (!isAdmin) return;
+  const loadUsers = useCallback(async () => {
+    if (!isAdmin || !currentBrand?.id) {
+      setUsers([]);
+      return;
+    }
     try {
       const { data } = await api.get('/admin/users', withBrandHeaders());
       setUsers(data.users || []);
-    } catch (error) {
+    } catch {
       // ignore
     }
-  };
+  }, [isAdmin, currentBrand?.id, withBrandHeaders]);
 
   useEffect(() => {
     loadEntries();
@@ -111,7 +114,7 @@ const FollowUpsPanel = () => {
 
   useEffect(() => {
     loadUsers();
-  }, [isAdmin]);
+  }, [loadUsers]);
 
   const openModal = (record) => {
     setEditing(record || null);
